@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ledger
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ledger:8000
+  - job_name: pls
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - pls:8001

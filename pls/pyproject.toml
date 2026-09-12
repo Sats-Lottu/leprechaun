@@ -1,0 +1,73 @@
+[project]
+name = "pls"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Lucas Santos Silva",email = "luss1010@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "faststream[rabbit] (>=0.6.5,<0.7.0)",
+    "pydantic-settings (>=2.12.0,<3.0.0)",
+    "alembic (>=1.18.3,<2.0.0)",
+    "psycopg[binary] (>=3.3.2,<4.0.0)",
+    "aiosqlite (>=0.22.1,<0.23.0)",
+    "sqlalchemy[asyncio] (>=2.0.46,<3.0.0)",
+    "httpx (>=0.28.1,<0.29.0)",
+    "websockets (>=16.0,<17.0)",
+    "tenacity (>=9.1.4,<10.0.0)"
+]
+
+[dependency-groups]
+dev = [
+    "taskipy (>=1.14.1,<2.0.0)",
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-cov (>=7.0.0,<8.0.0)",
+    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "testcontainers (>=4.14.1,<5.0.0)",
+    "factory-boy (>=3.3.3,<4.0.0)",
+    "ruff  (>=0.15.11,<0.16.0)",
+    "typos (>=1.45.1,<2.0.0)"
+]
+
+[tool.ruff]
+line-length = 79
+extend-exclude = ['migrations']
+
+[tool.ruff.lint]
+preview = true
+select = ['I', 'F', 'E', 'W', 'PL', 'PT', 'FAST']
+
+[tool.ruff.format]
+preview = true
+quote-style = 'single'
+
+[tool.pytest.ini_options]
+pythonpath = "."
+addopts = '-p no:warnings'
+asyncio_default_fixture_loop_scope = 'function'
+
+[tool.coverage.run]
+core = "ctrace"
+concurrency = ["thread", "greenlet"]
+
+[tool.taskipy.tasks]
+pre_lint = 'typos'
+lint = 'ruff check'
+pre_format = 'ruff check --fix'
+format = 'ruff format'
+pre_test = 'task lint'
+run = 'python pls/main.py'
+test = 'pytest -s -x --cov=pls -vv'
+post_test = 'coverage html'
+
+[tool.typos.default]
+extend-ignore-identifiers-re = ["selectin"]
+
+[tool.typos.files]
+extend-exclude = ["*.md"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

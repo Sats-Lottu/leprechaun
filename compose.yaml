@@ -1,0 +1,164 @@
+services:
+  database:
+    image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./local-bootstrap/init-databases.sql:/docker-entrypoint-initdb.d/01-services.sql:ro
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app_user}
+      POSTGRES_DB: app_db
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    expose:
+      - 5432
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app_user} -d app_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ledger/DockerFile
+    entrypoint: [ "sh", "/app/entrypoint.sh" ]
+    expose:
+      - 8000
+    environment:
+      DATABASE_URL: ${LEDGER_DATABASE_URL:?LEDGER_DATABASE_URL is required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+      PAYMENT_EVENTS_QUEUE: ${PAYMENT_EVENTS_QUEUE:-payment.lightning.events}
+      LIGHTNING_SETTLEMENT_ACCOUNT_ID: ${LIGHTNING_SETTLEMENT_ACCOUNT_ID:-00000000-0000-0000-0000-000000000000}
+      PAYMENT_EVENT_CONSUMER_ENABLED: ${PAYMENT_EVENT_CONSUMER_ENABLED:-false}
+      LEDGER_INTERNAL_API_TOKENS: ${LEDGER_INTERNAL_API_TOKENS:?LEDGER_INTERNAL_API_TOKENS is required}
+      LOG_LEVEL: ${LEDGER_LOG_LEVEL:-INFO}
+      HOLD_EXPIRATION_INTERVAL_SECONDS: ${HOLD_EXPIRATION_INTERVAL_SECONDS:-60}
+      HOLD_EXPIRATION_BATCH_SIZE: ${HOLD_EXPIRATION_BATCH_SIZE:-100}
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=2)\"" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    expose:
+      - 5672 # porta para apps
+    ports:
+      - "127.0.0.1:0:15672" # painel web de administração
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-user}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivity
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  lnbits:
+    image: lnbits/lnbits
+    expose:
+      - 5000
+    environment:
+      LNBITS_BACKEND_WALLET_CLASS: FakeWallet
+      LNBITS_DATA_FOLDER: /data
+    volumes:
+      - lnbitsdata:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/', timeout=2)\"" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      ledger:
+        condition: service_healthy
+      pls:
+        condition: service_healthy
+
+  pls:
+    build:
+      context: .
+      dockerfile: pls/DockerFile
+    entrypoint: [ "sh", "/app/entrypoint.sh" ]
+    expose:
+      - 8001
+    environment:
+      RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+      DATABASE_URL: ${PLS_DATABASE_URL:?PLS_DATABASE_URL is required}
+      PAYMENT_COMMANDS_QUEUE: ${PAYMENT_COMMANDS_QUEUE:-payment.lightning.commands}
+      PAYMENT_EVENTS_QUEUE: ${PAYMENT_EVENTS_QUEUE:-payment.lightning.events}
+      PAYMENT_COMMANDS_DLQ: ${PAYMENT_COMMANDS_DLQ:-payment.lightning.commands.dlq}
+      COMMAND_RETRY_ATTEMPTS: ${COMMAND_RETRY_ATTEMPTS:-3}
+      COMMAND_RETRY_BACKOFF_SEC: ${COMMAND_RETRY_BACKOFF_SEC:-0.1}
+      OUTBOX_PUBLISH_BATCH_SIZE: ${OUTBOX_PUBLISH_BATCH_SIZE:-100}
+      RECONCILIATION_INTERVAL_SECONDS: ${RECONCILIATION_INTERVAL_SECONDS:-60}
+      RECONCILIATION_BATCH_SIZE: ${RECONCILIATION_BATCH_SIZE:-100}
+      OBSERVABILITY_ENABLED: ${OBSERVABILITY_ENABLED:-true}
+      OBSERVABILITY_HOST: ${OBSERVABILITY_HOST:-0.0.0.0}
+      OBSERVABILITY_PORT: ${OBSERVABILITY_PORT:-8001}
+      LNBITS_URL: ${LNBITS_URL:-http://lnbits:5000}
+      LNBITS_WALLET_ID: ${LNBITS_WALLET_ID:-}
+      LNBITS_INVOICE_READ_KEY: ${LNBITS_INVOICE_READ_KEY:-}
+      LNBITS_ADMIN_KEY: ${LNBITS_ADMIN_KEY:-}
+      LNBITS_USERNAME: ${LNBITS_USERNAME:-}
+      LNBITS_PASSWORD: ${LNBITS_PASSWORD:-}
+      LNBITS_INVOICE_TTL: ${LNBITS_INVOICE_TTL:-3600}
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      lnbits:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)\"" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  hub:
+    build:
+      context: .
+      dockerfile: hub/DockerFile
+    entrypoint: [ "sh", "/app/entrypoint.sh" ]
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: ${HUB_DATABASE_URL:?HUB_DATABASE_URL is required}
+      RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+      LEDGER_BASE_URL: http://ledger:8000
+      LEDGER_INTERNAL_API_TOKEN: ${HUB_LEDGER_INTERNAL_API_TOKEN:?HUB_LEDGER_INTERNAL_API_TOKEN is required}
+      LIGHTNING_SETTLEMENT_ACCOUNT_ID: ${LIGHTNING_SETTLEMENT_ACCOUNT_ID:-00000000-0000-0000-0000-000000000000}
+      HUB_STORAGE_SECRET: ${HUB_STORAGE_SECRET:?HUB_STORAGE_SECRET is required}
+      SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?SESSION_SECRET_KEY is required}
+      SESSION_HTTPS_ONLY: ${SESSION_HTTPS_ONLY:-false}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID is required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_SERVER_METADATA_URL: ${OIDC_SERVER_METADATA_URL:?OIDC_SERVER_METADATA_URL is required}
+      OIDC_ISSUER: ${OIDC_ISSUER:?OIDC_ISSUER is required}
+      OIDC_SCOPE: ${OIDC_SCOPE:-openid profile}
+      OIDC_REDIRECT_PATH: ${OIDC_REDIRECT_PATH:-/auth/callback}
+      PAYMENT_COMMANDS_QUEUE: ${PAYMENT_COMMANDS_QUEUE:-payment.lightning.commands}
+      PAYMENT_EVENTS_QUEUE: ${PAYMENT_EVENTS_QUEUE:-payment.lightning.events}
+    depends_on:
+      ledger:
+        condition: service_healthy
+      pls:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  lnbitsdata:

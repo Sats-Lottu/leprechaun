@@ -1,0 +1,26 @@
+{
+  "realm": "leprechaun",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "clients": [{
+    "clientId": "hub-local-client",
+    "enabled": true,
+    "publicClient": true,
+    "standardFlowEnabled": true,
+    "directAccessGrantsEnabled": false,
+    "redirectUris": ["http://localhost:8000/auth/callback"],
+    "webOrigins": ["http://localhost:8000"],
+    "attributes": {"pkce.code.challenge.method": "S256"}
+  }],
+  "users": [{
+    "id": "00000000-0000-0000-0000-000000000300",
+    "username": "player",
+    "enabled": true,
+    "emailVerified": true,
+    "email": "player@example.test",
+    "firstName": "Local",
+    "lastName": "Player",
+    "credentials": [{"type": "password", "value": "local-player-password", "temporary": false}]
+  }]
+}

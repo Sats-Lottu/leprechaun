@@ -1,0 +1,75 @@
+# WARNING: NEVER USE THIS BOOTSTRAP IN PRODUCTION.
+# Public credentials, fictitious identities and simulated balances only.
+# Development only: isolated volumes, known credentials and simulated funds.
+name: leprechaun-local
+services:
+  database:
+    volumes:
+      - local_pgdata:/var/lib/postgresql/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.3
+    command: [start-dev, --import-realm]
+    environment:
+      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: local-admin-password
+    ports:
+      - '127.0.0.1:8080:8080'
+    volumes:
+      - ./local-bootstrap/leprechaun-realm.json:/opt/keycloak/data/import/leprechaun-realm.json:ro
+
+  lnbits:
+    ports:
+      - '127.0.0.1:5000:5000'
+    volumes:
+      - local_lnbitsdata:/data
+
+  lnbits-init:
+    image: python:3.11-alpine
+    command: [python, /bootstrap/lnbits.py]
+    volumes:
+      - ./local-bootstrap/bootstrap-lnbits.py:/bootstrap/lnbits.py:ro
+      - local_config:/local
+    depends_on:
+      lnbits:
+        condition: service_healthy
+
+  ledger:
+    environment:
+      PYTHONPATH: /app
+      LIGHTNING_SETTLEMENT_ACCOUNT_ID: 00000000-0000-0000-0000-000000000100
+      PAYMENT_EVENT_CONSUMER_ENABLED: 'true'
+    entrypoint: [sh, -ec, 'poetry run alembic upgrade head; poetry run python /bootstrap/seed-ledger.py; exec sh /app/entrypoint.sh']
+    volumes:
+      - ./local-bootstrap/bootstrap-ledger.py:/bootstrap/seed-ledger.py:ro
+
+  pls:
+    entrypoint: [python, /bootstrap/start-pls.py]
+    volumes:
+      - ./local-bootstrap/start-pls-local.py:/bootstrap/start-pls.py:ro
+      - local_config:/local:ro
+    environment:
+      LNBITS_USERNAME: localadmin
+      LNBITS_PASSWORD: local-lnbits-password
+      LNBITS_WALLET_ID: ''
+    depends_on:
+      lnbits-init:
+        condition: service_completed_successfully
+
+  hub:
+    environment:
+      OIDC_SERVER_METADATA_URL: http://keycloak:8080/realms/leprechaun/.well-known/openid-configuration
+      OIDC_ISSUER: http://localhost:8080/realms/leprechaun
+      OIDC_CLIENT_ID: hub-local-client
+      OIDC_CLIENT_SECRET: ''
+      LIGHTNING_SETTLEMENT_ACCOUNT_ID: 00000000-0000-0000-0000-000000000100
+    depends_on:
+      keycloak:
+        condition: service_started
+
+volumes:
+  local_pgdata:
+  local_lnbitsdata:
+  local_config:
