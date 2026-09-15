@@ -61,20 +61,16 @@ def test_create_checkout_session_accepts_anonymous_user() -> None:
     assert payload.expires_in_sec == DEFAULT_EXPIRES_IN_SEC
 
 
-def test_create_checkout_session_requires_destination_account() -> None:
-    try:
-        CreateCheckoutSessionRequest(
-            game_id='leprechaun-game',
-            order_id='order-1',
-            amount_sats=AMOUNT_SATS,
-            description='Ticket purchase',
-            return_url='https://game.example/return',
-            cancel_url='https://game.example/cancel',
-        )
-    except ValidationError:
-        return
-
-    raise AssertionError('destination_account_id must be required')
+def test_create_checkout_destination_can_be_resolved_by_hub() -> None:
+    payload = CreateCheckoutSessionRequest(
+        game_id='leprechaun-game',
+        order_id='order-1',
+        amount_sats=AMOUNT_SATS,
+        description='Ticket purchase',
+        return_url='https://game.example/return',
+        cancel_url='https://game.example/cancel',
+    )
+    assert payload.destination_account_id is None
 
 
 def test_envelope_rejects_unknown_meta_fields() -> None:

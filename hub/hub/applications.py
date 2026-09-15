@@ -133,6 +133,10 @@ async def require_application(
 
 
 def validate_checkout_application(payload, application: ConnectedApplication):
+    if payload.game_id is None:
+        payload.game_id = application.slug
+    if payload.destination_account_id is None:
+        payload.destination_account_id = application.destination_account_id
     if (
         payload.game_id != application.slug
         or payload.destination_account_id != application.destination_account_id

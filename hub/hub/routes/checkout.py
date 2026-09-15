@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from fastapi import (
     APIRouter,
@@ -11,7 +11,7 @@ from fastapi import (
     Response,
     status,
 )
-from pydantic import HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,7 +29,12 @@ from hub.checkout_service import (
     prepare_checkout_payment,
     settle_checkout_payment,
 )
-from hub.ledger_client import LedgerClientError
+from hub.ledger_client import (
+    LedgerClient,
+    LedgerClientError,
+    LedgerTransactionCreate,
+    LedgerTransactionEntryCreate,
+)
 from hub.models.database import get_session
 from hub.models.enums import CheckoutSessionStatus
 from hub.models.tables import CheckoutSession as CheckoutSessionTable
@@ -43,6 +48,84 @@ from hub.schemas import (
 router = APIRouter(prefix='/api/checkout', tags=['checkout'])
 Application = Annotated[ConnectedApplication, Depends(require_application)]
 CheckoutUser = Annotated[str, Depends(require_checkout_user)]
+
+
+class PrizeRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    payout_id: UUID
+    order_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    amount_msat: int = Field(gt=0, strict=True)
+
+
+@router.post('/payouts')
+async def credit_prize(
+    payload: PrizeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    application: Application,
+) -> dict:
+    checkout = await session.scalar(
+        select(CheckoutSessionTable).where(
+            CheckoutSessionTable.application_id == application.id,
+            CheckoutSessionTable.order_id == payload.order_id,
+            CheckoutSessionTable.user_id == payload.user_id,
+        )
+    )
+    if checkout is None:
+        raise HTTPException(
+            404, 'Paid checkout not found for this application'
+        )
+    if (
+        checkout.status != CheckoutSessionStatus.SETTLED
+        or not checkout.ledger_account_id
+        or not checkout.destination_account_id
+    ):
+        raise HTTPException(409, 'Checkout is not settled with known accounts')
+    # Accounts are frozen by the checkout. The caller cannot supply ledger IDs.
+    reference = uuid5(application.id, str(payload.payout_id))
+    key = f'application:{application.id}:prize:{payload.payout_id}'
+    ledger = LedgerClient()
+    try:
+        transaction = await ledger.create_transaction(
+            LedgerTransactionCreate(
+                reference_type='application_prize',
+                reference_id=reference,
+                idempotency_key=key,
+                description='Application prize',
+                entries=(
+                    LedgerTransactionEntryCreate(
+                        account_id=checkout.destination_account_id,
+                        entry_type='debit',
+                        amount_msat=payload.amount_msat,
+                        reference_type='checkout_session',
+                        reference_id=checkout.id,
+                    ),
+                    LedgerTransactionEntryCreate(
+                        account_id=checkout.ledger_account_id,
+                        entry_type='credit',
+                        amount_msat=payload.amount_msat,
+                        reference_type='checkout_session',
+                        reference_id=checkout.id,
+                    ),
+                ),
+            )
+        )
+        if transaction.status == 'pending':
+            transaction = await ledger.post_transaction(
+                transaction.transaction_id,
+                idempotency_key=key + ':post',
+            )
+    except LedgerClientError as exc:
+        raise HTTPException(
+            503, 'Prize transfer pending; retry with same payout ID'
+        ) from exc
+    if transaction.status != 'posted':
+        raise HTTPException(409, 'Prize transfer is not posted')
+    return dict(
+        payload.model_dump(mode='json'),
+        transaction_id=str(transaction.transaction_id),
+        status='posted',
+    )
 
 
 @dataclass(frozen=True)

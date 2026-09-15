@@ -114,9 +114,9 @@ class CreateCheckoutSessionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     user_id: str | None = None
-    game_id: str = Field(min_length=1)
+    game_id: str | None = Field(default=None, min_length=1)
     order_id: str = Field(min_length=1)
-    destination_account_id: UUID
+    destination_account_id: UUID | None = None
     amount_sats: int = Field(gt=0)
     description: str = Field(min_length=1, max_length=280)
     return_url: HttpUrl
