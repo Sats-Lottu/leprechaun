@@ -12,6 +12,8 @@ reservas e liquidação no Ledger e solicita invoices ao PLS via RabbitMQ.
 - `/user/profile`: identidade do usuário e histórico.
 - `/admin/applications`: cadastro de aplicações, ativação, desativação, troca de
   chave e histórico administrativo.
+- `/admin/balances`: consulta de contas e operações administrativas auditáveis
+  de crédito, débito e reserva de saldo.
 - `/admin/*`: demais páginas administrativas ainda incluem resumos básicos e
   espaços reservados. Não são um console financeiro completo.
 

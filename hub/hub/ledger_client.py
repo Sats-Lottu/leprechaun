@@ -23,6 +23,18 @@ class LedgerAccount:
 
 
 @dataclass(frozen=True)
+class LedgerAccountDetails:
+    account_id: UUID
+    account_type: str
+    owner_id: UUID | None
+    name: str
+    balance_msat: int
+    reserved_balance_msat: int
+    available_balance_msat: int
+    is_active: bool
+
+
+@dataclass(frozen=True)
 class LedgerHold:
     hold_id: UUID
     status: str
@@ -129,6 +141,22 @@ class LedgerClient:
             reserved_balance_msat=int(data['reserved_balance']),
             available_balance_msat=int(data['available_balance']),
         )
+
+    async def list_accounts(self) -> list[LedgerAccountDetails]:
+        data = await self._request('GET', '/accounts')
+        return [
+            LedgerAccountDetails(
+                account_id=UUID(str(item['account_id'])),
+                account_type=str(item['account_type']),
+                owner_id=_optional_uuid(item.get('owner_id')),
+                name=str(item.get('name') or ''),
+                balance_msat=int(item['balance']),
+                reserved_balance_msat=int(item['reserved_balance']),
+                available_balance_msat=int(item['available_balance']),
+                is_active=bool(item['is_active']),
+            )
+            for item in data.get('accounts', [])
+        ]
 
     async def create_hold(self, payload: LedgerHoldCreate) -> LedgerHold:
         data = await self._request(

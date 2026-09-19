@@ -11,6 +11,7 @@ from hub.layout import (
 from hub.models.database import session_scope
 from hub.models.enums import AdminRoleStatus
 from hub.models.tables import AdminRoleAssignment, CheckoutSession
+from hub.pages.admin_balances import render_admin_balances
 
 router = APIRouter(prefix='/admin')
 
@@ -51,7 +52,15 @@ async def users_page() -> None:
 
 @router.page('/balances')
 async def balances_page() -> None:
-    await _admin_page('Balances', '/admin/balances', 'Review ledger balances.')
+    with app_layout(
+        title='Balances',
+        active_path='/admin/balances',
+        area='Admin',
+        nav_items=ADMIN_NAV_ITEMS,
+    ):
+        if not _require_admin():
+            return
+        await render_admin_balances()
 
 
 @router.page('/transactions')

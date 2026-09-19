@@ -32,6 +32,21 @@ class AccountCreated(BaseModel):
     name: str | None = None
 
 
+class AccountDetails(BaseModel):
+    account_id: UUID
+    account_type: AccountType
+    owner_id: UUID | None = None
+    name: str = ''
+    balance: int
+    reserved_balance: int
+    available_balance: int
+    is_active: bool
+
+
+class AccountsList(BaseModel):
+    accounts: list[AccountDetails] = Field(default_factory=list)
+
+
 class AccountBalance(BaseModel):
     balance: int
     reserved_balance: int

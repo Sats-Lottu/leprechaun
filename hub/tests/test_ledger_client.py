@@ -14,6 +14,7 @@ from hub.ledger_client import (
 BALANCE_MSAT = 3000
 RESERVED_MSAT = 1000
 AVAILABLE_MSAT = 2000
+LISTED_AVAILABLE_MSAT = 5000
 HOLD_AMOUNT_MSAT = 1500
 STATEMENT_AMOUNT_MSAT = 2000
 ACCOUNT_PATH = '/accounts/00000000-0000-0000-0000-000000000001'
@@ -61,6 +62,46 @@ async def test_ledger_client_gets_balance(monkeypatch) -> None:
     assert balance.reserved_balance_msat == RESERVED_MSAT
     assert balance.available_balance_msat == AVAILABLE_MSAT
     assert requests[0].headers['X-Internal-Service-Token'] == 'token'
+
+
+@pytest.mark.asyncio
+async def test_ledger_client_lists_accounts(monkeypatch) -> None:
+    async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                'accounts': [
+                    {
+                        'account_id': (
+                            '00000000-0000-0000-0000-000000000001'
+                        ),
+                        'account_type': 'user',
+                        'owner_id': None,
+                        'name': 'Alice',
+                        'balance': 8_000,
+                        'reserved_balance': 3_000,
+                        'available_balance': LISTED_AVAILABLE_MSAT,
+                        'is_active': True,
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        'AsyncClient',
+        lambda **kwargs: async_client(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        ),
+    )
+
+    accounts = await LedgerClient(base_url='http://ledger').list_accounts()
+
+    assert accounts[0].name == 'Alice'
+    assert accounts[0].available_balance_msat == LISTED_AVAILABLE_MSAT
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,20 @@ def test_metrics_endpoint(client):
     assert 'ledger_http_requests_total' in response.text
 
 
+def test_list_accounts_returns_balances(client, user_account):
+    response = client.get('/accounts')
+
+    assert response.status_code == status.HTTP_200_OK
+    account = next(
+        item
+        for item in response.json()['accounts']
+        if item['account_id'] == str(user_account.id)
+    )
+    assert account['account_type'] == 'user'
+    assert account['balance'] == user_account.balance
+    assert account['reserved_balance'] == user_account.reserved_balance
+
+
 def test_internal_auth_rejects_missing_token(client, monkeypatch):
     monkeypatch.setenv(
         'LEDGER_INTERNAL_API_TOKENS',

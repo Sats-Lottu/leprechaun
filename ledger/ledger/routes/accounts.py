@@ -14,6 +14,8 @@ from ledger.observability import log_event
 from ledger.schemas import (
     AccountBalance,
     AccountCreated,
+    AccountDetails,
+    AccountsList,
     AccountStatement,
     TransactionEntryDetails,
 )
@@ -22,6 +24,29 @@ router = APIRouter(prefix='/accounts', tags=['accounts'])
 logger = logging.getLogger(__name__)
 
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+@router.get('', response_model=AccountsList)
+async def list_accounts(session: Session):
+    accounts = await session.scalars(select(Account).order_by(Account.name))
+    return AccountsList(
+        accounts=[
+            AccountDetails(
+                account_id=account.id,
+                account_type=account.account_type,
+                owner_id=account.owner_id,
+                name=account.name,
+                balance=account.balance,
+                reserved_balance=account.reserved_balance,
+                available_balance=max(
+                    account.balance - account.reserved_balance,
+                    0,
+                ),
+                is_active=account.is_active,
+            )
+            for account in accounts
+        ]
+    )
 
 
 @router.post(

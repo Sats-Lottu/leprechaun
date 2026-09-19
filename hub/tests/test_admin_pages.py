@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -63,12 +64,6 @@ async def test_admin_home_redirects_to_users(monkeypatch) -> None:
     [
         (admin.users_page, 'Users', '/admin/users', 'Manage payment users.'),
         (
-            admin.balances_page,
-            'Balances',
-            '/admin/balances',
-            'Review ledger balances.',
-        ),
-        (
             admin.transactions_page,
             'Transactions',
             '/admin/transactions',
@@ -119,6 +114,22 @@ async def test_admin_routes_delegate_to_admin_page(
     await page()
 
     admin_page.assert_awaited_once_with(title, active_path, description)
+
+
+@pytest.mark.asyncio
+async def test_balances_page_renders_ledger_operations(monkeypatch) -> None:
+    render_admin_balances = AsyncMock()
+    monkeypatch.setattr(admin, 'app_layout', lambda **kwargs: nullcontext())
+    monkeypatch.setattr(admin, '_require_admin', lambda: True)
+    monkeypatch.setattr(
+        admin,
+        'render_admin_balances',
+        render_admin_balances,
+    )
+
+    await admin.balances_page()
+
+    render_admin_balances.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
