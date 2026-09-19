@@ -7,8 +7,12 @@ from sqlalchemy import func, select
 
 from hub.auth import current_roles, current_user, current_user_sub
 from hub.checkout_service import (
+    FINAL_CHECKOUT_STATUSES,
+    CheckoutCancellationError,
     CheckoutSessionStateError,
     CheckoutSettlementError,
+    cancel_checkout_payment,
+    expire_if_due,
     get_or_create_user_ledger_account,
     prepare_checkout_payment,
     settle_checkout_payment,
@@ -174,89 +178,264 @@ async def checkout_page() -> None:
 
         checkout_session = await _load_checkout_session(session_id)
 
+        if checkout_session is None:
+            ui.label('Checkout unavailable. Please check your link.').classes(
+                MUTED_TEXT_CLASS
+            )
+            return
+        if checkout_session.status == CheckoutSessionStatus.SETTLED:
+            ui.label('Payment confirmed. Purchase completed.')
+            ui.navigate.to(checkout_session.return_url)
+            return
+
+        ui.button(
+            'Back to store',
+            icon='arrow_back',
+            on_click=lambda: ui.navigate.to(checkout_session.cancel_url),
+        ).props('flat no-caps')
+        ui.label('Choose how you want to pay.').classes(MUTED_TEXT_CLASS)
+        await _checkout_content(checkout_session)
+        if current_user_sub() and checkout_session.status in {
+            CheckoutSessionStatus.RESERVED,
+            CheckoutSessionStatus.AWAITING_PAYMENT,
+        }:
+            _watch_checkout_payment(session_id)
+
+
+async def _checkout_content(checkout: CheckoutSession) -> None:
+    available = await _checkout_available_balance(checkout)
+    selected = 'balance' if checkout.internal_amount_msat else 'lightning'
+    if checkout.status == CheckoutSessionStatus.CREATED:
+        selected = ''
+    busy = False
+
+    async def prepare(use_balance: bool):
+        nonlocal busy, selected
+        if busy:
+            return
+        user_sub = current_user_sub()
+        if user_sub is None:
+            ui.navigate.to(f'/auth/login?checkout_session={checkout.id}')
+            return
+        busy = True
+        render.refresh()
+        try:
+            result = await _prepare_checkout_session_for_user(
+                session_id=checkout.id,
+                user_sub=user_sub,
+                confirm=True,
+                use_balance=use_balance,
+            )
+            if result is not None:
+                ui.navigate.to(f'/user/checkout?session_id={checkout.id}')
+        finally:
+            busy = False
+            selected = '' if not use_balance else 'balance'
+            render.refresh()
+
+    async def choose(method: str):
+        nonlocal selected
+        if busy:
+            return
+        selected = method
+        render.refresh()
+        if method == 'lightning':
+            await prepare(False)
+
+    @ui.refreshable
+    def render():
+        with ui.grid().classes(
+            'w-full grid-cols-1 gap-6 items-start lg:grid-cols-3'
+        ):
+            with ui.card().classes(
+                f'{CARD_CLASS} w-full min-w-0 p-5 sm:p-6 lg:col-span-2'
+            ):
+                ui.label('Choose payment method').classes(
+                    f'text-xl {PANEL_TITLE_CLASS}'
+                )
+                if checkout.status in FINAL_CHECKOUT_STATUSES:
+                    ui.label(f'Checkout {checkout.status}.').classes(
+                        MUTED_TEXT_CLASS
+                    )
+                else:
+                    _checkout_method_choices(
+                        checkout, available, selected, choose, busy
+                    )
+                    _checkout_payment_details(checkout, selected)
+            with ui.card().classes(
+                f'{CARD_CLASS} w-full min-w-0 p-5 sm:p-6 lg:sticky lg:top-20'
+            ):
+                _checkout_order_summary(checkout)
+                if checkout.status not in FINAL_CHECKOUT_STATUSES:
+                    if current_user_sub() is None:
+                        ui.button(
+                            'Login to continue',
+                            icon='login',
+                            on_click=lambda: ui.navigate.to(
+                                f'/auth/login?checkout_session={checkout.id}'
+                            ),
+                        ).classes('w-full').props('no-caps')
+                    elif selected == 'balance' and checkout.status == (
+                        CheckoutSessionStatus.CREATED
+                    ):
+                        ui.button(
+                            'Confirm payment',
+                            icon='check',
+                            on_click=lambda: prepare(True),
+                        ).classes('w-full').props(
+                            'no-caps loading disable' if busy else 'no-caps'
+                        )
+                    if current_user_sub():
+                        ui.button(
+                            'Cancel payment',
+                            icon='close',
+                            on_click=lambda: _cancel_checkout(checkout.id),
+                        ).classes('w-full').props(
+                            'flat no-caps disable' if busy else 'flat no-caps'
+                        )
+
+    render()
+
+
+def _checkout_order_summary(checkout: CheckoutSession) -> None:
+    ui.label('Order summary').classes(f'text-xl {PANEL_TITLE_CLASS}')
+    ui.label(checkout.description or 'Purchase').classes(
+        'text-lg font-medium break-words w-full'
+    )
+    ui.label(f'Application: {checkout.game_id}').classes(
+        f'{MUTED_TEXT_CLASS} break-all'
+    )
+    ui.label(f'Order: {checkout.order_id}').classes(
+        f'{MUTED_TEXT_CLASS} text-sm break-all'
+    )
+    ui.label('Order Amount').classes('mt-4 text-sm')
+    ui.label(_format_msat(checkout.amount_msat)).classes(
+        f'text-3xl {VALUE_TEXT_CLASS}'
+    )
+    if checkout.status != CheckoutSessionStatus.CREATED:
+        _checkout_composition(checkout)
+
+
+async def _checkout_available_balance(checkout: CheckoutSession) -> int:
+    user_sub = current_user_sub()
+    if not user_sub or checkout.status != CheckoutSessionStatus.CREATED:
+        return 0
+    try:
+        async with session_scope() as session:
+            ledger = LedgerClient()
+            account = await get_or_create_user_ledger_account(
+                user_sub=user_sub,
+                session=session,
+                ledger=ledger,
+            )
+            balance = await ledger.get_balance(account.ledger_account_id)
+            return max(0, balance.available_balance_msat)
+    except LedgerClientError:
+        ui.notify('Wallet balance is unavailable.', type='warning')
+        return 0
+
+
+def _checkout_method_choices(checkout, available, selected, choose, busy):
+    methods = [('lightning', 'Lightning', 'bolt')]
+    if available > 0 or checkout.internal_amount_msat:
+        methods.insert(
+            0, ('balance', 'Wallet balance', 'account_balance_wallet')
+        )
+    with ui.grid().classes('w-full grid-cols-1 gap-3 sm:grid-cols-2'):
+        for key, label, icon in methods:
+            active = key == selected
+            button = (
+                ui
+                .button(
+                    label,
+                    icon=icon,
+                    on_click=lambda method=key: choose(method),
+                )
+                .classes('w-full min-h-24 rounded-lg')
+                .props(f'no-caps outline aria-pressed={str(active).lower()}')
+            )
+            if active:
+                button.classes('bg-white/10 ring-2 ring-primary')
+            if busy or checkout.status != CheckoutSessionStatus.CREATED:
+                button.props('disable')
+    if available:
+        ui.label(f'Available balance: {_format_msat(available)}').classes(
+            MUTED_TEXT_CLASS
+        )
+
+
+def _checkout_payment_details(checkout, selected):
+    if checkout.status == CheckoutSessionStatus.AWAITING_PAYMENT:
+        ui.label('Pay with Lightning').classes('text-xl font-semibold mt-4')
+        ui.label('Payment is confirmed automatically.').classes(
+            MUTED_TEXT_CLASS
+        )
+        with ui.grid().classes('w-full grid-cols-1 gap-5 xl:grid-cols-2'):
+            with ui.column().classes('w-full min-w-0 items-center'):
+                if checkout.payment_request:
+                    _payment_request_qr(checkout.payment_request)
+                else:
+                    ui.label('Invoice unavailable. Reload to retry.').classes(
+                        MUTED_TEXT_CLASS
+                    )
+            with ui.column().classes('w-full min-w-0 gap-3'):
+                ui.label('Amount to pay').classes(MUTED_TEXT_CLASS)
+                ui.label(_format_msat(checkout.external_amount_msat)).classes(
+                    f'text-2xl {VALUE_TEXT_CLASS}'
+                )
+                ui.label(
+                    'Open your Lightning wallet, scan the QR code '
+                    'or copy the invoice, then pay in your wallet.'
+                )
+                ui.label('You will return to the store after confirmation.')
+                ui.label(
+                    'Expires: '
+                    + _format_optional_datetime(
+                        checkout.invoice_expires_at or checkout.expires_at
+                    )
+                ).classes(f'text-sm break-all {MUTED_TEXT_CLASS}')
+    elif checkout.status == CheckoutSessionStatus.RESERVED:
+        ui.label('Processing payment. Please wait.').classes(MUTED_TEXT_CLASS)
+    elif selected == 'balance':
         ui.label(
-            'Start anonymous, then login when balance or settlement requires '
-            'it.'
+            'Confirm to use your wallet balance. Any remaining amount '
+            'is paid by Lightning.'
+        ).classes(MUTED_TEXT_CLASS)
+    elif selected == 'lightning':
+        ui.label('Preparing your Lightning invoice…').classes(MUTED_TEXT_CLASS)
+    else:
+        ui.label(
+            'Select a method to continue. Lightning payments are '
+            'confirmed automatically.'
         ).classes(MUTED_TEXT_CLASS)
 
-        order_amount = (
-            _format_msat(checkout_session.amount_msat)
-            if checkout_session
-            else '0 sats'
+
+async def _cancel_checkout(session_id: UUID) -> None:
+    user_sub = current_user_sub()
+    if not user_sub:
+        ui.notify('Login is required to cancel payment.', type='warning')
+        return
+    try:
+        async with session_scope() as session:
+            checkout = await session.get(CheckoutSession, session_id)
+            if checkout is None or checkout.user_id not in {None, user_sub}:
+                ui.notify('Checkout unavailable.', type='negative')
+                return
+            result = await cancel_checkout_payment(
+                checkout_session_id=session_id,
+                session=session,
+            )
+            ui.navigate.to(result.cancel_url)
+    except (
+        CheckoutCancellationError,
+        CheckoutSessionStateError,
+        LedgerClientError,
+        LookupError,
+    ):
+        ui.notify(
+            'Could not cancel payment. Please refresh and try again.',
+            type='negative',
         )
-        external_amount = (
-            _format_msat(checkout_session.external_amount_msat)
-            if checkout_session
-            else '0 sats'
-        )
-        with ui.grid(columns=1).classes('w-full gap-4 md:grid-cols-2'):
-            _summary_tile(
-                'Order Amount',
-                order_amount,
-                str(checkout_session.status)
-                if checkout_session
-                else 'Order unavailable',
-            )
-            _summary_tile(
-                'External Payment',
-                external_amount,
-                'No invoice created'
-                if not checkout_session or not checkout_session.invoice_id
-                else 'Invoice ready',
-            )
-
-        if checkout_session is not None:
-            ui.label(f'Application: {checkout_session.game_id}').classes(
-                'text-lg'
-            )
-            _checkout_composition(checkout_session)
-            if checkout_session.status == CheckoutSessionStatus.SETTLED:
-                ui.label('Payment confirmed. Purchase completed.').classes(
-                    'text-green-400'
-                )
-                ui.navigate.to(checkout_session.return_url)
-            elif current_user_sub() is None:
-                ui.button(
-                    'Login to continue',
-                    icon='login',
-                    on_click=lambda: ui.navigate.to(
-                        f'/auth/login?checkout_session={session_id}'
-                    ),
-                )
-            elif checkout_session.status == CheckoutSessionStatus.CREATED:
-
-                async def confirm_payment():
-                    user_sub = current_user_sub()
-                    if user_sub is None:
-                        ui.navigate.to(
-                            f'/auth/login?checkout_session={session_id}'
-                        )
-                        return
-                    await _prepare_checkout_session_for_user(
-                        session_id=session_id,
-                        user_sub=user_sub,
-                        confirm=True,
-                    )
-                    ui.navigate.to(f'/user/checkout?session_id={session_id}')
-
-                ui.label(
-                    'Confirm to use your wallet balance. '
-                    'Any remaining amount is paid by Lightning.'
-                )
-                ui.button(
-                    'Confirm payment', icon='check', on_click=confirm_payment
-                )
-            if (
-                checkout_session.payment_request
-                and checkout_session.status
-                == CheckoutSessionStatus.AWAITING_PAYMENT
-            ):
-                _payment_request_qr(checkout_session.payment_request)
-            if current_user_sub() and checkout_session.status in {
-                CheckoutSessionStatus.RESERVED,
-                CheckoutSessionStatus.AWAITING_PAYMENT,
-            }:
-                _watch_checkout_payment(session_id)
 
 
 def _watch_checkout_payment(session_id: UUID) -> None:
@@ -282,6 +461,7 @@ def _watch_checkout_payment(session_id: UUID) -> None:
                 CheckoutSessionStatus.AWAITING_PAYMENT,
             }:
                 timer.cancel()
+                ui.navigate.to(f'/user/checkout?session_id={session_id}')
         finally:
             in_flight = False
 
@@ -806,7 +986,7 @@ def _ledger_statement_panel(
 
 
 def _checkout_composition(checkout_session: CheckoutSession) -> None:
-    with ui.card().classes(f'w-full {CARD_CLASS}'):
+    with ui.column().classes('w-full border-t border-gray-600 pt-4'):
         ui.label('Payment composition').classes(f'text-lg {PANEL_TITLE_CLASS}')
         ui.label(
             f'Internal balance: '
@@ -815,10 +995,6 @@ def _checkout_composition(checkout_session: CheckoutSession) -> None:
         ui.label(
             f'External invoice: '
             f'{_format_msat(checkout_session.external_amount_msat)}'
-        ).classes(f'text-sm {MUTED_TEXT_CLASS}')
-        ui.label(
-            f'Destination account: '
-            f'{checkout_session.destination_account_id or "-"}'
         ).classes(f'text-sm {MUTED_TEXT_CLASS}')
         ui.label(f'Status: {checkout_session.status}').classes(
             f'text-sm {MUTED_TEXT_CLASS}'
@@ -831,7 +1007,7 @@ def _payment_request_qr(payment_request: str) -> None:
         'Open in Lightning Wallet'
     ):
         ui.image(qrcode.svg_data_uri(light='white', border=1)).classes(
-            'w-64'
+            'w-64 max-w-full bg-white rounded-lg p-2'
         ).tooltip('Scan with your Lightning Wallet')
     ui.label(payment_request).classes(
         'mt-2 w-full break-all text-xs text-center'
@@ -888,6 +1064,7 @@ async def _prepare_checkout_session_for_user(  # noqa: PLR0911
     session_id: UUID,
     user_sub: str,
     confirm: bool = False,
+    use_balance: bool = True,
 ) -> CheckoutSession | None:
     try:
         async with session_scope() as db_session:
@@ -899,6 +1076,8 @@ async def _prepare_checkout_session_for_user(  # noqa: PLR0911
                     'This checkout belongs to another user.', type='negative'
                 )
                 return None
+            if expire_if_due(existing):
+                await db_session.commit()
             if (
                 existing.status == CheckoutSessionStatus.CREATED
                 and not confirm
@@ -908,6 +1087,7 @@ async def _prepare_checkout_session_for_user(  # noqa: PLR0911
                 checkout_session_id=session_id,
                 user_sub=user_sub,
                 session=db_session,
+                use_balance=use_balance,
             )
             checkout_session = preparation.session
             if checkout_session.status not in {

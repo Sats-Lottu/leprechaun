@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -49,18 +49,26 @@ class FakeElement:
 
 
 class FakeUi:
+    def refreshable(self, func):
+        def refresh():
+            self.buttons.clear()
+            self.labels.clear()
+            func()
+
+        func.refresh = refresh
+        return func
+
     def __init__(self) -> None:
         self.labels: list[str] = []
         self.buttons: list[str] = []
+        self.callbacks: dict = {}
         self.images: list[str] = []
         self.links: list[str] = []
         self.notifications: list[dict] = []
         self.navigation: list[str] = []
         self.navigate = SimpleNamespace(to=self.navigation.append)
         self.context = SimpleNamespace(
-            client=SimpleNamespace(
-                request=SimpleNamespace(query_params={})
-            )
+            client=SimpleNamespace(request=SimpleNamespace(query_params={}))
         )
 
     def label(self, value: str) -> FakeElement:
@@ -75,6 +83,7 @@ class FakeUi:
         on_click=None,
     ) -> FakeElement:
         self.buttons.append(label)
+        self.callbacks[label] = on_click
         return FakeElement()
 
     def image(self, source: str) -> FakeElement:
@@ -93,7 +102,7 @@ class FakeUi:
         return FakeElement()
 
     @staticmethod
-    def grid(*, columns: int) -> FakeElement:
+    def grid(*, columns: int | None = None) -> FakeElement:
         return FakeElement()
 
     @staticmethod
@@ -505,3 +514,71 @@ def test_current_session_id_rejects_missing_or_invalid_query_param(
 
 def test_format_msat() -> None:
     assert user._format_msat(7_000) == '7 sats'  # noqa: SLF001
+
+
+@pytest.mark.parametrize('available', [0, 10_000, 25_000])
+async def test_checkout_method_selection_requires_balance_consent(
+    monkeypatch,
+    available,
+):
+    fake_ui = FakeUi()
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(
+        user, '_checkout_available_balance', AsyncMock(return_value=available)
+    )
+    prepare = AsyncMock(return_value=None)
+    monkeypatch.setattr(user, '_prepare_checkout_session_for_user', prepare)
+    checkout = SimpleNamespace(
+        id=SESSION_ID,
+        status='created',
+        internal_amount_msat=0,
+        external_amount_msat=0,
+        amount_msat=AMOUNT_MSAT,
+        description='Tickets',
+        game_id='game',
+        order_id='order',
+    )
+    await user._checkout_content(checkout)
+    assert ('Wallet balance' in fake_ui.buttons) == (available > 0)
+    assert 'Lightning' in fake_ui.buttons
+    assert 'Confirm payment' not in fake_ui.buttons
+    prepare.assert_not_awaited()
+    if available:
+        await fake_ui.callbacks['Wallet balance']()
+        assert 'Confirm payment' in fake_ui.buttons
+        prepare.assert_not_awaited()
+        await fake_ui.callbacks['Confirm payment']()
+        assert prepare.await_args.kwargs['use_balance'] is True
+        prepare.reset_mock()
+    await fake_ui.callbacks['Lightning']()
+    assert 'Confirm payment' not in fake_ui.buttons
+    prepare.assert_awaited_once_with(
+        session_id=SESSION_ID,
+        user_sub='user-123',
+        confirm=True,
+        use_balance=False,
+    )
+
+
+@pytest.mark.parametrize('owner', ['user-123', 'someone-else'])
+async def test_cancel_checkout_requires_ownership(monkeypatch, owner):
+    @asynccontextmanager
+    async def scope():
+        yield SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(user_id=owner))
+        )
+
+    fake_ui = FakeUi()
+    cancel = AsyncMock(return_value=SimpleNamespace(cancel_url='/store'))
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'session_scope', scope)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(user, 'cancel_checkout_payment', cancel)
+    await user._cancel_checkout(SESSION_ID)
+    if owner == 'user-123':
+        cancel.assert_awaited_once()
+        assert fake_ui.navigation == ['/store']
+    else:
+        cancel.assert_not_awaited()
+        assert not fake_ui.navigation

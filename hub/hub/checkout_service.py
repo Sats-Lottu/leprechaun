@@ -83,13 +83,14 @@ async def get_or_create_user_ledger_account(
     return account
 
 
-async def prepare_checkout_payment(
+async def prepare_checkout_payment(  # noqa: PLR0913
     *,
     checkout_session_id: UUID,
     user_sub: str,
     session: AsyncSession,
     ledger: LedgerClient | None = None,
     invoice_requester=request_invoice_rabbitmq,
+    use_balance: bool = True,
 ) -> CheckoutPreparation:
     ledger = ledger or LedgerClient()
     checkout_session = await session.scalar(
@@ -131,7 +132,9 @@ async def prepare_checkout_payment(
     else:
         plan = funding_plan(
             amount_msat=checkout_session.amount_msat,
-            available_balance_msat=balance.available_balance_msat,
+            available_balance_msat=(
+                balance.available_balance_msat if use_balance else 0
+            ),
         )
 
     checkout_session.user_id = user_sub

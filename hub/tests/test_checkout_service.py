@@ -61,6 +61,47 @@ def test_funding_plan_uses_internal_balance_first() -> None:
     assert plan.external_amount_msat == EXTERNAL_MSAT
 
 
+async def test_lightning_selection_preserves_wallet_balance(session):
+    checkout = CheckoutSession(
+        game_id='game',
+        order_id='lightning-only',
+        amount_msat=AMOUNT_MSAT,
+        description='Purchase',
+        return_url='https://example.com/return',
+        cancel_url='https://example.com/cancel',
+        checkout_url='https://example.com/checkout',
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    session.add(checkout)
+    await session.commit()
+    ledger = FakeLedger(available_balance_msat=AMOUNT_MSAT)
+
+    async def invoice_requester(**kwargs):
+        assert kwargs['amount_msat'] == AMOUNT_MSAT
+        return {'invoice_id': 'lightning', 'payment_request': 'lnbc1test'}
+
+    result = await prepare_checkout_payment(
+        checkout_session_id=checkout.id,
+        user_sub='user-123',
+        session=session,
+        ledger=ledger,
+        invoice_requester=invoice_requester,
+        use_balance=False,
+    )
+    assert result.session.internal_amount_msat == 0
+    assert result.session.external_amount_msat == AMOUNT_MSAT
+    assert ledger.holds == []
+    repeated = await prepare_checkout_payment(
+        checkout_session_id=checkout.id,
+        user_sub='user-123',
+        session=session,
+        ledger=ledger,
+        invoice_requester=invoice_requester,
+    )
+    assert repeated.session.internal_amount_msat == 0
+    assert ledger.holds == []
+
+
 @pytest.mark.asyncio
 async def test_get_or_create_user_ledger_account_persists_mapping(
     session,
@@ -279,8 +320,7 @@ async def test_cancel_checkout_payment_rejects_consumed_hold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_settle_checkout_uses_hold_and_posts_external(
-) -> None:
+async def test_settle_checkout_uses_hold_and_posts_external() -> None:
     checkout_session = SimpleNamespace(
         id=UUID('00000000-0000-0000-0000-000000000001'),
         status=CheckoutSessionStatus.AWAITING_PAYMENT,

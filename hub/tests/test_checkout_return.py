@@ -68,6 +68,10 @@ async def test_return_requires_settled_checkout(monkeypatch, status):
         ui.navigate.to.assert_called_once_with(
             'https://bingo.example/orders/123'
         )
+    elif status in {'expired', 'canceled', 'failed'}:
+        ui.navigate.to.assert_called_once_with(
+            f'/user/checkout?session_id={session_id}'
+        )
     else:
         ui.navigate.to.assert_not_called()
     if status in {'settled', 'expired', 'canceled', 'failed'}:
