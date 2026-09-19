@@ -6,7 +6,14 @@ from fastapi.responses import JSONResponse
 
 from ledger.settings import get_settings
 
-PUBLIC_PATHS = {'/', '/metrics'}
+PUBLIC_PATHS = {
+    '/',
+    '/metrics',
+    '/docs',
+    '/docs/oauth2-redirect',
+    '/openapi.json',
+    '/redoc',
+}
 
 
 @dataclass(frozen=True)

@@ -199,6 +199,36 @@ def test_internal_auth_keeps_metrics_public(client, monkeypatch):
     assert response.status_code == status.HTTP_200_OK
 
 
+@pytest.mark.parametrize('path', ['/docs', '/openapi.json', '/redoc'])
+def test_internal_auth_keeps_api_documentation_public(
+    client, monkeypatch, path
+):
+    monkeypatch.setenv(
+        'LEDGER_INTERNAL_API_TOKENS',
+        'pls:test-token:read,write',
+    )
+    get_settings.cache_clear()
+
+    response = client.get(path)
+
+    assert response.status_code == status.HTTP_200_OK
+
+
+def test_openapi_documents_internal_service_token(client):
+    schema = client.get('/openapi.json').json()
+
+    assert schema['components']['securitySchemes']['InternalServiceToken'] == {
+        'type': 'apiKey',
+        'in': 'header',
+        'name': 'X-Internal-Service-Token',
+        'description': 'Token used for service-to-service Ledger API calls.',
+    }
+    assert schema['paths']['/accounts']['post']['security'] == [
+        {'InternalServiceToken': []}
+    ]
+    assert 'security' not in schema['paths']['/']['get']
+
+
 def test_create_user_account(client):
     owner_id = uuid4()
     response = client.post(
