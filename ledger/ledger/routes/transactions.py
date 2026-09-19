@@ -24,7 +24,7 @@ from ledger.idempotency import (
     record_operation_idempotency,
 )
 from ledger.models.database import get_session
-from ledger.models.enums import EntryType, TransactionStatus
+from ledger.models.enums import EntryType, TransactionKind, TransactionStatus
 from ledger.models.tables import (
     Account,
     BalanceHold,
@@ -82,6 +82,8 @@ def _transaction_details(
     return TransactionDetails(
         transaction_id=transaction.id,
         status=transaction.status,
+        kind=transaction.kind,
+        external_origin=transaction.external_origin,
         reference_type=transaction.reference_type,
         reference_id=transaction.reference_id,
         description=transaction.description,
@@ -100,7 +102,9 @@ def _transaction_details(
     )
 
 
-def _validate_entries(entries: list[TransactionEntryCreate]) -> None:
+def _validate_entries(
+    entries: list[TransactionEntryCreate], kind: TransactionKind
+) -> None:
     if not entries:
         raise ledger_error(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -123,11 +127,27 @@ def _validate_entries(entries: list[TransactionEntryCreate]) -> None:
         if entry.entry_type is EntryType.CREDIT:
             credit_total += entry.amount
 
-    if debit_total != credit_total:
+    if kind is TransactionKind.TRANSFER and debit_total != credit_total:
         raise ledger_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             code="transaction_unbalanced",
             message="Transaction entries must be balanced",
+        )
+    if kind is TransactionKind.EXTERNAL_CREDIT and (
+        debit_total or not credit_total
+    ):
+        raise ledger_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="invalid_external_credit_entries",
+            message="External credit transactions must contain only credits",
+        )
+    if kind is TransactionKind.EXTERNAL_DEBIT and (
+        credit_total or not debit_total
+    ):
+        raise ledger_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="invalid_external_debit_entries",
+            message="External debit transactions must contain only debits",
         )
 
 
@@ -302,10 +322,20 @@ async def create_transaction(
                 status=existing_transaction.status,
             )
 
-    _validate_entries(payload.entries)
+    _validate_entries(payload.entries, payload.kind)
+    if payload.kind is not TransactionKind.TRANSFER and not (
+        payload.external_origin.strip()
+    ):
+        raise ledger_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            code="external_origin_required",
+            message="External transactions require an external origin",
+        )
     await _ensure_accounts_exist(payload.entries, session)
 
     transaction = LedgerTransaction(
+        kind=payload.kind,
+        external_origin=payload.external_origin.strip(),
         reference_type=payload.reference_type,
         reference_id=payload.reference_id,
         idempotency_key=payload.idempotency_key,
@@ -376,6 +406,8 @@ async def create_transaction(
             idempotency_key=payload.idempotency_key,
             metadata={
                 "entry_count": len(payload.entries),
+                "kind": transaction.kind,
+                "external_origin": transaction.external_origin,
                 "reference_type": transaction.reference_type,
                 "reference_id": str(transaction.reference_id)
                 if transaction.reference_id
@@ -495,8 +527,14 @@ def _reverse_entry_type(entry_type: EntryType) -> EntryType:
 async def _create_reversal_transaction(
     transaction: LedgerTransaction, session: AsyncSession
 ) -> LedgerTransaction:
+    reversal_kind = {
+        TransactionKind.EXTERNAL_CREDIT: TransactionKind.EXTERNAL_DEBIT,
+        TransactionKind.EXTERNAL_DEBIT: TransactionKind.EXTERNAL_CREDIT,
+    }.get(TransactionKind(transaction.kind), TransactionKind.TRANSFER)
     reversal = LedgerTransaction(
         status=TransactionStatus.POSTED,
+        kind=reversal_kind,
+        external_origin=transaction.external_origin,
         reference_type=transaction.reference_type,
         reference_id=transaction.reference_id,
         description=f"Reversal of transaction {transaction.id}",

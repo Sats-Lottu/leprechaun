@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ledger.models.enums import EntryType, TransactionStatus
+from ledger.models.enums import EntryType, TransactionKind, TransactionStatus
 from ledger.models.tables import (
     LedgerAuditEvent,
     LedgerEntry,
@@ -228,6 +228,57 @@ async def test_create_transaction_function_rejects_unbalanced_entries(
         exc.value,
         'transaction_unbalanced',
         'Transaction entries must be balanced',
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_credit_posts_without_internal_counterpart(
+    session, user_account
+):
+    created = await create_transaction(
+        session,
+        payload=TransactionCreate(
+            kind=TransactionKind.EXTERNAL_CREDIT,
+            external_origin='lightning',
+            entries=[
+                TransactionEntryCreate(
+                    account_id=user_account.id,
+                    entry_type=EntryType.CREDIT,
+                    amount=100,
+                )
+            ],
+        ),
+    )
+
+    details = await post_transaction(created.transaction_id, session)
+
+    assert details.kind == TransactionKind.EXTERNAL_CREDIT
+    assert details.external_origin == 'lightning'
+    assert user_account.balance == 100  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_external_credit_rejects_debit_entries(session, user_account):
+    with pytest.raises(HTTPException) as exc:
+        await create_transaction(
+            session,
+            payload=TransactionCreate(
+                kind=TransactionKind.EXTERNAL_CREDIT,
+                external_origin='lightning',
+                entries=[
+                    TransactionEntryCreate(
+                        account_id=user_account.id,
+                        entry_type=EntryType.DEBIT,
+                        amount=100,
+                    )
+                ],
+            ),
+        )
+
+    assert_error(
+        exc.value,
+        'invalid_external_credit_entries',
+        'External credit transactions must contain only credits',
     )
 
 

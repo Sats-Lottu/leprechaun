@@ -47,9 +47,10 @@ class LedgerHoldCreate:
     account_id: UUID
     amount_msat: int
     reason: str
-    reference_id: UUID
+    reference_type: str
+    reference_id: UUID | None
     idempotency_key: str
-    expires_at: datetime
+    expires_at: datetime | None
 
 
 class LedgerClientError(RuntimeError):
@@ -89,6 +90,8 @@ class LedgerTransactionCreate:
     idempotency_key: str
     description: str
     entries: tuple[LedgerTransactionEntryCreate, ...]
+    kind: str = 'transfer'
+    external_origin: str = ''
 
 
 class LedgerClient:
@@ -135,10 +138,14 @@ class LedgerClient:
                 'account_id': str(payload.account_id),
                 'amount': payload.amount_msat,
                 'reason': payload.reason,
-                'reference_type': 'checkout_session',
-                'reference_id': str(payload.reference_id),
+                'reference_type': payload.reference_type,
+                'reference_id': str(payload.reference_id)
+                if payload.reference_id
+                else None,
                 'idempotency_key': payload.idempotency_key,
-                'expires_at': payload.expires_at.isoformat(),
+                'expires_at': payload.expires_at.isoformat()
+                if payload.expires_at
+                else None,
             },
         )
         return LedgerHold(
@@ -196,6 +203,8 @@ class LedgerClient:
             'POST',
             '/transactions',
             json={
+                'kind': payload.kind,
+                'external_origin': payload.external_origin,
                 'reference_type': payload.reference_type,
                 'reference_id': str(payload.reference_id)
                 if payload.reference_id

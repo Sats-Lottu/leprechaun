@@ -160,6 +160,8 @@ Payload:
 
 ```json
 {
+  "kind": "transfer",
+  "external_origin": "",
   "reference_type": "payment_order",
   "reference_id": "uuid",
   "idempotency_key": "txn-1",
@@ -183,7 +185,9 @@ Regras:
 
 * a transacao deve ter pelo menos um lancamento
 * cada lancamento deve ter `amount` maior que zero
-* a soma dos debitos deve ser igual a soma dos creditos
+* `transfer` exige que a soma dos debitos seja igual a soma dos creditos
+* `external_credit` aceita somente creditos e exige `external_origin`
+* `external_debit` aceita somente debitos e exige `external_origin`
 * todas as contas referenciadas devem existir
 * `idempotency_key` reutilizada retorna a transacao existente
 
@@ -214,6 +218,8 @@ Resposta:
 {
   "transaction_id": "uuid",
   "status": "pending",
+  "kind": "transfer",
+  "external_origin": "",
   "reference_type": "payment_order",
   "reference_id": "uuid",
   "description": "Pagamento",

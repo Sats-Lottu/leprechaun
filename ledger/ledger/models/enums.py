@@ -44,6 +44,15 @@ class TransactionStatus(StrEnum):
     CANCELLED: str = auto()
 
 
+class TransactionKind(StrEnum):
+    # Transferencia entre contas controladas pelo Ledger.
+    TRANSFER: str = auto()
+    # Entrada de valor confirmada por um sistema de pagamento externo.
+    EXTERNAL_CREDIT: str = auto()
+    # Saida de valor confirmada por um sistema de pagamento externo.
+    EXTERNAL_DEBIT: str = auto()
+
+
 class HoldStatus(StrEnum):
     # Reserva ativa de saldo
     # Valor está indisponível para uso, mas ainda não foi debitado

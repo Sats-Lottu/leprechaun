@@ -4,36 +4,31 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from ledger.models.enums import AccountType, EntryType, TransactionStatus
-from ledger.models.tables import Account, LedgerEntry, LedgerTransaction
+from ledger.models.enums import (
+    AccountType,
+    EntryType,
+    HoldStatus,
+    TransactionKind,
+    TransactionStatus,
+)
+from ledger.models.tables import (
+    Account,
+    BalanceHold,
+    LedgerEntry,
+    LedgerTransaction,
+)
 from ledger.payment_events import process_payment_event
-from ledger.settings import get_settings
 
 pytestmark = pytest.mark.asyncio
-INITIAL_SETTLEMENT_BALANCE = 100_000
 DEPOSIT_AMOUNT_MSAT = 21_000
-SETTLEMENT_BALANCE_AFTER_DEPOSIT = 79_000
-EXPECTED_ENTRY_COUNT = 2
+EXPECTED_ENTRY_COUNT = 1
 
 
-async def test_payment_invoice_paid_credits_user_from_settlement_account(
-    monkeypatch,
-    session,
-):
+async def test_payment_invoice_paid_creates_external_user_credit(session):
     user_id = uuid4()
-    settlement = Account(
-        account_type=AccountType.ESCROW,
-        name='Lightning settlement',
-        balance=INITIAL_SETTLEMENT_BALANCE,
-    )
     user = Account(account_type=AccountType.USER, owner_id=user_id)
-    session.add_all([settlement, user])
+    session.add(user)
     await session.commit()
-    monkeypatch.setenv(
-        'LIGHTNING_SETTLEMENT_ACCOUNT_ID',
-        str(settlement.id),
-    )
-    get_settings.cache_clear()
 
     transaction = await process_payment_event(
         {
@@ -55,10 +50,11 @@ async def test_payment_invoice_paid_credits_user_from_settlement_account(
 
     assert transaction is not None
     assert transaction.status == TransactionStatus.POSTED
+    assert transaction.kind == TransactionKind.EXTERNAL_CREDIT
+    assert transaction.external_origin == 'lightning'
     assert transaction.idempotency_key == (
         'payment.invoice.paid:lnbits-checking-id'
     )
-    assert settlement.balance == SETTLEMENT_BALANCE_AFTER_DEPOSIT
     assert user.balance == DEPOSIT_AMOUNT_MSAT
     entries = (
         await session.scalars(
@@ -68,27 +64,15 @@ async def test_payment_invoice_paid_credits_user_from_settlement_account(
         )
     ).all()
     assert len(entries) == EXPECTED_ENTRY_COUNT
-    assert {entry.entry_type for entry in entries} == {
-        EntryType.CREDIT,
-        EntryType.DEBIT,
-    }
+    assert entries[0].entry_type == EntryType.CREDIT
+    assert entries[0].account_id == user.id
 
 
-async def test_payment_invoice_paid_is_idempotent(monkeypatch, session):
+async def test_payment_invoice_paid_is_idempotent(session):
     user_id = uuid4()
-    settlement = Account(
-        account_type=AccountType.ESCROW,
-        name='Lightning settlement',
-        balance=INITIAL_SETTLEMENT_BALANCE,
-    )
     user = Account(account_type=AccountType.USER, owner_id=user_id)
-    session.add_all([settlement, user])
+    session.add(user)
     await session.commit()
-    monkeypatch.setenv(
-        'LIGHTNING_SETTLEMENT_ACCOUNT_ID',
-        str(settlement.id),
-    )
-    get_settings.cache_clear()
     raw_event = {
         'meta': {'type': 'payment.invoice.paid', 'event_id': 'event-1'},
         'data': {
@@ -109,5 +93,50 @@ async def test_payment_invoice_paid_is_idempotent(monkeypatch, session):
     assert first is not None
     assert second is None
     assert len(transactions) == 1
-    assert settlement.balance == SETTLEMENT_BALANCE_AFTER_DEPOSIT
     assert user.balance == DEPOSIT_AMOUNT_MSAT
+
+
+async def test_payment_sent_consumes_withdrawal_hold(session):
+    user_id = uuid4()
+    payment_reference = uuid4()
+    user = Account(
+        account_type=AccountType.USER,
+        owner_id=user_id,
+        balance=DEPOSIT_AMOUNT_MSAT,
+        reserved_balance=DEPOSIT_AMOUNT_MSAT,
+    )
+    hold = BalanceHold(
+        account_id=user.id,
+        amount=DEPOSIT_AMOUNT_MSAT,
+        reference_type='wallet_withdrawal',
+        reference_id=payment_reference,
+    )
+    session.add_all([user, hold])
+    await session.commit()
+
+    transaction = await process_payment_event(
+        {
+            'meta': {
+                'type': 'payment.sent',
+                'event_id': 'event-withdrawal',
+                'correlation_id': 'corr-withdrawal',
+            },
+            'data': {
+                'user_id': str(user_id),
+                'payment_reference': str(payment_reference),
+                'payment_hash': 'hash-out',
+                'checking_id': 'check-out',
+                'amount_msat': DEPOSIT_AMOUNT_MSAT,
+                'paid_at': datetime.now(UTC).isoformat(),
+            },
+        },
+        session,
+    )
+
+    assert transaction is not None
+    assert transaction.kind == TransactionKind.EXTERNAL_DEBIT
+    assert transaction.external_origin == 'lightning'
+    assert transaction.status == TransactionStatus.POSTED
+    assert user.balance == 0
+    assert user.reserved_balance == 0
+    assert hold.status == HoldStatus.CONSUMED

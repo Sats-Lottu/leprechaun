@@ -83,6 +83,7 @@ async def request_pay_invoice_rabbitmq(
     user_id: str,
     payment_request: str,
     amount_msat: int,
+    payment_reference: str,
     timeout_sec: float = 20.0,
 ) -> dict[str, Any] | None:
     return await _request_payment_command(
@@ -91,6 +92,7 @@ async def request_pay_invoice_rabbitmq(
             'user_id': str(ledger_owner_id(user_id)),
             'payment_request': payment_request,
             'amount_msat': amount_msat,
+            'payment_reference': payment_reference,
         },
         timeout_sec=timeout_sec,
     )

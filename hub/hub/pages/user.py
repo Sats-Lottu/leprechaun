@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import segno
 from nicegui import APIRouter, ui
@@ -28,10 +29,9 @@ from hub.layout import (
 from hub.ledger_client import (
     LedgerClient,
     LedgerClientError,
+    LedgerHoldCreate,
     LedgerHoldDetails,
     LedgerStatementEntry,
-    LedgerTransactionCreate,
-    LedgerTransactionEntryCreate,
 )
 from hub.models.database import session_scope
 from hub.models.enums import CheckoutSessionStatus
@@ -41,7 +41,6 @@ from hub.rabbitmq import (
     request_pay_invoice_rabbitmq,
 )
 from hub.schemas import MSATS_PER_SAT
-from hub.settings import get_settings
 
 router = APIRouter(prefix='/user')
 
@@ -69,7 +68,8 @@ class UserIdentity:
 
 @dataclass(frozen=True)
 class WalletWithdrawalResult:
-    transaction_id: UUID
+    hold_id: UUID
+    payment_reference: UUID
     amount_msat: int
     payment_hash: str
     checking_id: str
@@ -606,13 +606,6 @@ async def withdraw_wallet_balance(  # noqa: PLR0913
     if not normalized_payment_request:
         raise ValueError('payment_request is required')
 
-    settings = get_settings()
-    settlement_account_id = settings.LIGHTNING_SETTLEMENT_ACCOUNT_ID
-    if settlement_account_id is None:
-        raise WalletWithdrawalError(
-            'LIGHTNING_SETTLEMENT_ACCOUNT_ID must be configured in hub'
-        )
-
     account = await get_or_create_user_ledger_account(
         user_sub=user_sub,
         session=session,
@@ -623,50 +616,35 @@ async def withdraw_wallet_balance(  # noqa: PLR0913
     if balance.available_balance_msat < amount_msat:
         raise WalletWithdrawalError('insufficient available balance')
 
+    payment_reference = uuid4()
+    hold = await ledger.create_hold(
+        LedgerHoldCreate(
+            account_id=account.ledger_account_id,
+            amount_msat=amount_msat,
+            reason='wallet withdrawal',
+            reference_type='wallet_withdrawal',
+            reference_id=payment_reference,
+            idempotency_key=f'wallet-withdrawal:{payment_reference}:hold',
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        )
+    )
+
     payout = await payout_requester(
         user_id=user_sub,
         payment_request=normalized_payment_request,
         amount_msat=amount_msat,
+        payment_reference=str(payment_reference),
     )
     if not payout:
         return None
 
     payment_hash = str(payout.get('payment_hash') or '')
     checking_id = str(payout.get('checking_id') or '')
-    reference_key = checking_id or payment_hash
-    if not reference_key:
+    if not (checking_id or payment_hash):
         raise WalletWithdrawalError('PLS did not return a payout reference')
-
-    transaction = await ledger.create_transaction(
-        LedgerTransactionCreate(
-            reference_type='wallet_withdrawal',
-            reference_id=None,
-            idempotency_key=f'wallet-withdrawal:{reference_key}',
-            description='Wallet Lightning withdrawal',
-            entries=(
-                LedgerTransactionEntryCreate(
-                    account_id=account.ledger_account_id,
-                    entry_type='debit',
-                    amount_msat=amount_msat,
-                    description='User wallet withdrawal debit',
-                    reference_type='wallet_withdrawal',
-                ),
-                LedgerTransactionEntryCreate(
-                    account_id=settlement_account_id,
-                    entry_type='credit',
-                    amount_msat=amount_msat,
-                    description='Lightning settlement replenishment credit',
-                    reference_type='wallet_withdrawal',
-                ),
-            ),
-        )
-    )
-    posted_transaction = await ledger.post_transaction(
-        transaction.transaction_id,
-        idempotency_key=f'wallet-withdrawal:post:{reference_key}',
-    )
     return WalletWithdrawalResult(
-        transaction_id=posted_transaction.transaction_id,
+        hold_id=hold.hold_id,
+        payment_reference=payment_reference,
         amount_msat=amount_msat,
         payment_hash=payment_hash,
         checking_id=checking_id,
@@ -756,7 +734,7 @@ def _account_management_panel(
             ui.button(
                 'Refresh Wallet',
                 icon='refresh',
-                on_click=lambda: ui.navigate.to('/user/wallet'),
+                on_click=lambda: ui.navigate.to('/'),
             ).props('outline').classes('w-full sm:w-auto')
 
 
@@ -857,7 +835,7 @@ def _wallet_withdraw_panel(
         payout_label = ui.label('Payment reference: -').classes(
             f'text-sm {MUTED_TEXT_CLASS}'
         )
-        transaction_label = ui.label('Ledger transaction: -').classes(
+        transaction_label = ui.label('Ledger hold: -').classes(
             f'text-sm {MUTED_TEXT_CLASS}'
         )
 
@@ -898,11 +876,13 @@ def _wallet_withdraw_panel(
 
             payout_reference = result.checking_id or result.payment_hash or '-'
             payout_label.text = f'Payment reference: {payout_reference}'
-            transaction_label.text = (
-                f'Ledger transaction: {result.transaction_id}'
+            transaction_label.text = f'Ledger hold: {result.hold_id}'
+            status_label.text = 'Status: withdrawal sent; settling ledger'
+            ui.notify(
+                'Lightning withdrawal sent. Ledger settlement is '
+                'asynchronous.',
+                type='positive',
             )
-            status_label.text = 'Status: withdrawal sent'
-            ui.notify('Lightning withdrawal sent.', type='positive')
 
         ui.button(
             'Send Lightning Withdrawal',

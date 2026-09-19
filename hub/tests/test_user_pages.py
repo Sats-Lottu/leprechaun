@@ -17,6 +17,7 @@ AVAILABLE_BALANCE_MSAT = 25_000
 RESERVED_BALANCE_MSAT = 5_000
 TOTAL_BALANCE_MSAT = 30_000
 OPEN_INVOICE_COUNT = 2
+WITHDRAWAL_AMOUNT_MSAT = 21_000
 
 
 class FakeElement:
@@ -307,21 +308,15 @@ async def test_withdraw_wallet_balance_posts_debit_after_pls_success(
     monkeypatch,
 ) -> None:
     user_account = UUID('00000000-0000-0000-0000-000000000001')
-    settlement_account = UUID('00000000-0000-0000-0000-000000000002')
-    transaction_id = UUID('00000000-0000-0000-0000-000000000003')
+    payment_reference = UUID('00000000-0000-0000-0000-000000000002')
+    hold_id = UUID('00000000-0000-0000-0000-000000000003')
     account = SimpleNamespace(ledger_account_id=user_account)
     monkeypatch.setattr(
         user,
         'get_or_create_user_ledger_account',
         AsyncMock(return_value=account),
     )
-    monkeypatch.setattr(
-        user,
-        'get_settings',
-        lambda: SimpleNamespace(
-            LIGHTNING_SETTLEMENT_ACCOUNT_ID=settlement_account
-        ),
-    )
+    monkeypatch.setattr(user, 'uuid4', lambda: payment_reference)
     ledger = SimpleNamespace(
         get_balance=AsyncMock(
             return_value=LedgerBalance(
@@ -330,11 +325,8 @@ async def test_withdraw_wallet_balance_posts_debit_after_pls_success(
                 available_balance_msat=100_000,
             )
         ),
-        create_transaction=AsyncMock(
-            return_value=SimpleNamespace(transaction_id=transaction_id)
-        ),
-        post_transaction=AsyncMock(
-            return_value=SimpleNamespace(transaction_id=transaction_id)
+        create_hold=AsyncMock(
+            return_value=SimpleNamespace(hold_id=hold_id, status='active')
         ),
     )
 
@@ -343,6 +335,7 @@ async def test_withdraw_wallet_balance_posts_debit_after_pls_success(
             'user_id': 'user-123',
             'payment_request': 'lnbc1withdraw',
             'amount_msat': 21_000,
+            'payment_reference': str(payment_reference),
         }
         return {'checking_id': 'chk-1', 'payment_hash': 'hash-1'}
 
@@ -356,30 +349,45 @@ async def test_withdraw_wallet_balance_posts_debit_after_pls_success(
     )
 
     assert result is not None
-    assert result.transaction_id == transaction_id
-    payload = ledger.create_transaction.await_args.args[0]
-    assert payload.entries[0].account_id == user_account
-    assert payload.entries[0].entry_type == 'debit'
-    assert payload.entries[1].account_id == settlement_account
-    assert payload.entries[1].entry_type == 'credit'
+    assert result.hold_id == hold_id
+    assert result.payment_reference == payment_reference
+    payload = ledger.create_hold.await_args.args[0]
+    assert payload.account_id == user_account
+    assert payload.amount_msat == WITHDRAWAL_AMOUNT_MSAT
+    assert payload.reference_type == 'wallet_withdrawal'
+    assert payload.reference_id == payment_reference
 
 
 @pytest.mark.asyncio
-async def test_withdraw_wallet_balance_requires_configured_settlement_account(
+async def test_withdraw_wallet_balance_rejects_insufficient_balance(
     monkeypatch,
 ) -> None:
+    account = SimpleNamespace(
+        ledger_account_id=UUID('00000000-0000-0000-0000-000000000010')
+    )
     monkeypatch.setattr(
         user,
-        'get_settings',
-        lambda: SimpleNamespace(LIGHTNING_SETTLEMENT_ACCOUNT_ID=None),
+        'get_or_create_user_ledger_account',
+        AsyncMock(return_value=account),
+    )
+    ledger = SimpleNamespace(
+        get_balance=AsyncMock(
+            return_value=LedgerBalance(
+                balance_msat=1_000,
+                reserved_balance_msat=0,
+                available_balance_msat=1_000,
+            )
+        )
     )
 
-    with pytest.raises(user.WalletWithdrawalError):
+    with pytest.raises(
+        user.WalletWithdrawalError, match='insufficient available balance'
+    ):
         await user.withdraw_wallet_balance(
             user_sub='user-123',
             amount_sats=21,
             payment_request='lnbc1withdraw',
-            ledger=SimpleNamespace(),
+            ledger=ledger,
             session=SimpleNamespace(),
         )
 

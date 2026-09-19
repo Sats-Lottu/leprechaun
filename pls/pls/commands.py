@@ -287,6 +287,7 @@ async def publish_payment_sent(ctx: PaymentSentContext) -> Response | None:
         payment_hash=ctx.payment.payment_hash,
         checking_id=ctx.payment.checking_id,
         amount_msat=ctx.amount_msat,
+        payment_reference=ctx.payment_reference,
         paid_at=now_utc_iso(),
     )
     out_env = Envelope(
@@ -408,6 +409,7 @@ async def handle_pay_invoice(ctx: CommandContext) -> Response | None:
             payment=payment,
             user_id=cmd.user_id,
             amount_msat=cmd.amount_msat,
+            payment_reference=cmd.payment_reference,
         )
     )
 
@@ -522,5 +524,6 @@ async def handle_pay_lnurl(ctx: CommandContext) -> Response | None:
             payment=payment,
             user_id=cmd.user_id,
             amount_msat=cmd.amount_msat,
+            payment_reference=None,
         )
     )

@@ -16,6 +16,7 @@ from ledger.models.enums import (
     AccountType,
     EntryType,
     HoldStatus,
+    TransactionKind,
     TransactionStatus,
 )
 
@@ -99,6 +100,10 @@ class LedgerTransaction(TimestampMixin):
             f"status IN ({_enum_values(TransactionStatus)})",
             name="ck_ledger_transactions_status_valid",
         ),
+        CheckConstraint(
+            f"kind IN ({_enum_values(TransactionKind)})",
+            name="ck_ledger_transactions_kind_valid",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -108,6 +113,15 @@ class LedgerTransaction(TimestampMixin):
     status: Mapped[str] = mapped_column(
         default=TransactionStatus.PENDING,
         index=True,
+    )
+
+    kind: Mapped[str] = mapped_column(
+        default=TransactionKind.TRANSFER,
+        index=True,
+    )
+
+    external_origin: Mapped[str] = mapped_column(
+        String(50), default="", index=True
     )
 
     # referência ao objeto de negócio que originou a transação

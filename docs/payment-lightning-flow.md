@@ -136,12 +136,14 @@ Unidade contabil:
 msat
 ```
 
-Lancamentos:
+Lancamento de fronteira externa:
 
 ```text
-debit  LIGHTNING_SETTLEMENT_ACCOUNT_ID  amount_msat
-credit conta do usuario                 amount_msat
+external_credit conta do usuario amount_msat origin=lightning
 ```
+
+O Ledger registra a origem e a invoice, mas nao controla wallet, canais ou
+liquidez do sistema Lightning. Esses detalhes permanecem no PLS e no provedor.
 
 A conta do usuario e localizada por:
 
@@ -179,12 +181,14 @@ Payload:
   "payment_hash": "hash",
   "checking_id": "lnbits-checking-id",
   "amount_msat": 100000,
+  "payment_reference": "uuid-da-retirada",
   "paid_at": "2026-04-18T15:00:00+00:00"
 }
 ```
 
-O contrato contabil de saida ainda deve ser fechado antes de usar saque ou
-pagamento externo com saldo interno.
+Para retiradas iniciadas pelo Hub, o Ledger localiza a reserva pela
+`payment_reference`, consome o hold e registra um `external_debit` com
+`origin=lightning`. O PLS apenas ecoa essa referencia opaca.
 
 ## Falhas
 
@@ -209,18 +213,15 @@ Payload:
 }
 ```
 
-## Bootstrap Necessario
+## Ativacao do consumidor
 
 Antes de ligar o consumidor do ledger em ambiente real:
 
-1. criar conta de liquidacao Lightning no ledger;
-2. garantir saldo operacional nessa conta;
-3. criar conta do usuario com `owner_id` igual ao `user_id` enviado ao PLS;
-4. configurar:
+1. criar a conta do usuario com `owner_id` igual ao `user_id` enviado ao PLS;
+2. configurar:
 
 ```env
 PAYMENT_EVENT_CONSUMER_ENABLED=true
-LIGHTNING_SETTLEMENT_ACCOUNT_ID=<uuid-da-conta-de-liquidacao>
 ```
 
 ## Garantias e Limites
@@ -237,4 +238,5 @@ Limites atuais:
 - RabbitMQ entrega eventos como ao menos uma vez;
 - consumidores devem ser idempotentes;
 - setup real do LNbits ainda precisa ser endurecido;
-- `payment.sent` ainda nao tem aplicacao contabil fechada no ledger.
+- o Ledger nao reconcilia liquidez Lightning ou on-chain; isso pertence ao PLS
+  e ao sistema de pagamento externo.

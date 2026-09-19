@@ -1,5 +1,4 @@
 from functools import lru_cache
-from uuid import UUID
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,7 +10,6 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///database.db"
     RABBITMQ_URL: str = "amqp://user:password@localhost:5672/"
     PAYMENT_EVENTS_QUEUE: str = "payment.lightning.events"
-    LIGHTNING_SETTLEMENT_ACCOUNT_ID: UUID | None = None
     HOLD_EXPIRATION_INTERVAL_SECONDS: float = 60.0
     HOLD_EXPIRATION_BATCH_SIZE: int = 100
     LEDGER_INTERNAL_API_TOKENS: str = ""

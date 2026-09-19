@@ -29,6 +29,7 @@ class PaymentSentContext:
     payment: Any
     user_id: str | None
     amount_msat: int | None
+    payment_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

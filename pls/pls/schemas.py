@@ -57,6 +57,7 @@ class PayInvoiceData(BaseModel):
     payment_request: str
     user_id: str | None = None
     amount_msat: int | None = Field(default=None, gt=0)
+    payment_reference: str | None = None
 
 
 class PayLNURLData(BaseModel):
@@ -128,6 +129,7 @@ class PaymentSentData(BaseModel):
     payment_hash: str | None = None
     checking_id: str | None = None
     amount_msat: int | None = None
+    payment_reference: str | None = None
     paid_at: str
 
 

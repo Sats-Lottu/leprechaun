@@ -13,12 +13,6 @@ from ledger.models.tables import Account
 async def main():
     async with AsyncSession(engine) as session, session.begin():
         for suffix, kind, name, balance in (
-            (
-                "100",
-                AccountType.PLATFORM,
-                "Local simulated Lightning reserve",
-                1_000_000_000,
-            ),
             ("200", AccountType.GAME, "Local demo game", 0),
         ):
             account_id = UUID("00000000-0000-0000-0000-000000000" + suffix)

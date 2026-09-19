@@ -7,6 +7,7 @@ from ledger.models.enums import (
     AccountType,
     EntryType,
     HoldStatus,
+    TransactionKind,
     TransactionStatus,
 )
 
@@ -107,6 +108,8 @@ class TransactionEntryCreate(BaseModel):
 
 
 class TransactionCreate(BaseModel):
+    kind: TransactionKind = TransactionKind.TRANSFER
+    external_origin: str = Field(default='', max_length=50)
     reference_type: str = ""
     reference_id: UUID | None = None
     idempotency_key: str | None = None
@@ -126,6 +129,8 @@ class TransactionEntryDetails(BaseModel):
 class TransactionDetails(BaseModel):
     transaction_id: UUID
     status: TransactionStatus
+    kind: TransactionKind
+    external_origin: str = ''
     reference_type: str = ""
     reference_id: UUID | None = None
     description: str = ""

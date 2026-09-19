@@ -189,12 +189,13 @@ Payload:
 }
 ```
 
-O ledger consome esse evento e aplica:
+O Ledger consome esse evento e registra a entrada externa:
 
 ```text
-debit  LIGHTNING_SETTLEMENT_ACCOUNT_ID  amount_msat
-credit conta do usuario                 amount_msat
+external_credit conta do usuario amount_msat origin=lightning
 ```
+
+O PLS nao conhece contas do Ledger nem controla saldos internos.
 
 ## Evento: `payment.sent`
 
@@ -209,9 +210,13 @@ Payload:
   "payment_hash": "hash",
   "checking_id": "lnbits-checking-id",
   "amount_msat": 100000,
+  "payment_reference": "uuid-opaco-ou-null",
   "paid_at": "2026-04-18T15:00:00+00:00"
 }
 ```
+
+`payment_reference` e apenas ecoada pelo PLS. Quando presente, permite ao
+Ledger correlacionar o resultado com uma reserva criada antes da retirada.
 
 O contrato contabil de saida ainda deve ser fechado antes de usar pagamentos
 externos com saldo interno.

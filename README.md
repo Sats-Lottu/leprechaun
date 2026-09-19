@@ -167,7 +167,7 @@ automatizados e compras simuladas de ponta a ponta.
 
 Antes de operar com fundos reais, ainda é necessário concluir:
 
-- Reserva prévia de saldo e recuperação durável de falhas no saque.
+- Recuperação durável de timeout e falhas no saque após a reserva prévia.
 - Recuperação de liquidações parcialmente concluídas entre serviços.
 - Validação de concorrência, reentrega de eventos e interrupções de serviços.
 - Configuração e revisão de segurança da implantação, incluindo HTTPS,
@@ -175,8 +175,9 @@ Antes de operar com fundos reais, ainda é necessário concluir:
 - Integração da confirmação financeira com a entrega de cada aplicação,
   incluindo emissão única de apostas e tratamento de compras não emitidas.
 
-O fluxo atual de saque envia o pagamento antes de registrar o débito. Essa
-limitação precisa ser resolvida antes de habilitar saques com fundos reais.
+O saque reserva saldo antes de chamar o PLS e o Ledger consome a reserva quando
+recebe `payment.sent`. Antes de usar fundos reais, ainda e necessario garantir
+recuperacao duravel para timeout, evento atrasado e falha entre servicos.
 
 ## Documentação dos serviços
 

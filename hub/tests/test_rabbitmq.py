@@ -129,6 +129,7 @@ async def test_request_pay_invoice_returns_response(monkeypatch) -> None:
         )
         assert payload['data']['payment_request'] == 'lnbc1withdraw'
         assert payload['data']['amount_msat'] == AMOUNT_MSAT
+        assert payload['data']['payment_reference'] == 'withdrawal-1'
         assert queue == 'payment.lightning.commands'
         assert reply_to == rabbitmq.REPLY_QUEUE
         assert correlation_id == 'cor-1'
@@ -149,6 +150,7 @@ async def test_request_pay_invoice_returns_response(monkeypatch) -> None:
         user_id='user-1',
         payment_request='lnbc1withdraw',
         amount_msat=AMOUNT_MSAT,
+        payment_reference='withdrawal-1',
         timeout_sec=0.1,
     )
 

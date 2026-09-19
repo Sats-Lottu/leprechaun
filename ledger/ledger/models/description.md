@@ -103,6 +103,8 @@ Campos principais:
 
 - `id`
 - `status`
+- `kind` (`transfer`, `external_credit` ou `external_debit`)
+- `external_origin`
 - `reference_type`
 - `reference_id`
 - `idempotency_key`
@@ -131,7 +133,10 @@ Campos principais:
 - `reference_type`
 - `reference_id`
 
-Cada transacao deve ter debitos e creditos equivalentes.
+Transacoes `transfer` devem ter debitos e creditos equivalentes.
+`external_credit` contem somente creditos e `external_debit` somente debitos;
+essas modalidades representam a fronteira do saldo interno, nao o saldo do
+sistema de pagamento externo.
 
 ### `balance_holds`
 
@@ -201,16 +206,17 @@ Quando o ledger consome `payment.invoice.paid`, ele cria uma transacao `posted`
 com:
 
 ```text
-debit  LIGHTNING_SETTLEMENT_ACCOUNT_ID  amount_msat
-credit conta do usuario                 amount_msat
+external_credit conta do usuario amount_msat origin=lightning
 ```
 
 Regras:
 
 - unidade contabil: `msat`;
 - conta do usuario: `account_type=user` e `owner_id=data.user_id`;
-- conta de liquidacao: `LIGHTNING_SETTLEMENT_ACCOUNT_ID`;
 - idempotencia: `payment.invoice.paid:{invoice_id}`.
+
+O evento `payment.sent` associado a uma `payment_reference` consome o hold de
+retirada e cria um `external_debit` na conta do usuario.
 
 ## Reconciliacao
 
@@ -225,5 +231,5 @@ verifica:
 - reserva da conta contra holds ativos;
 - saldo e reserva nao negativos;
 - reserva menor ou igual ao saldo;
-- transacoes postadas/revertidas balanceadas;
+- transferencias internas postadas/revertidas balanceadas;
 - timestamps coerentes com estados fechados.

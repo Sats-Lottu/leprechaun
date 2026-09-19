@@ -8,7 +8,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.models.database import engine
-from ledger.models.enums import EntryType, HoldStatus, TransactionStatus
+from ledger.models.enums import (
+    EntryType,
+    HoldStatus,
+    TransactionKind,
+    TransactionStatus,
+)
 from ledger.models.tables import (
     Account,
     BalanceHold,
@@ -110,7 +115,8 @@ async def _check_posted_transactions_balance(
             LedgerTransaction.status.in_([
                 TransactionStatus.POSTED,
                 TransactionStatus.REVERSED,
-            ])
+            ]),
+            LedgerTransaction.kind == TransactionKind.TRANSFER,
         )
     )
     for transaction in posted_transactions:

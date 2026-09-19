@@ -444,7 +444,6 @@ Variavel principal:
 DATABASE_URL
 RABBITMQ_URL
 PAYMENT_EVENTS_QUEUE
-LIGHTNING_SETTLEMENT_ACCOUNT_ID
 HOLD_EXPIRATION_INTERVAL_SECONDS
 HOLD_EXPIRATION_BATCH_SIZE
 LEDGER_INTERNAL_API_TOKENS
@@ -458,7 +457,6 @@ Valor padrao:
 sqlite+aiosqlite:///database.db
 amqp://user:password@localhost:5672/
 payment.lightning.events
-vazio
 60
 100
 vazio
@@ -472,7 +470,6 @@ Exemplo de `.env`:
 DATABASE_URL=sqlite+aiosqlite:///database.db
 RABBITMQ_URL=amqp://user:password@localhost:5672/
 PAYMENT_EVENTS_QUEUE=payment.lightning.events
-LIGHTNING_SETTLEMENT_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
 HOLD_EXPIRATION_INTERVAL_SECONDS=60
 HOLD_EXPIRATION_BATCH_SIZE=100
 LEDGER_INTERNAL_API_TOKENS=pls:change-me-ledger-token:read,write
@@ -673,13 +670,12 @@ Unidade contabil: `msat`.
 Lancamento criado:
 
 ```text
-debit  LIGHTNING_SETTLEMENT_ACCOUNT_ID  amount_msat
-credit conta do usuario                 amount_msat
+external_credit conta do usuario amount_msat origin=lightning
 ```
 
 A conta do usuario e localizada por `accounts.owner_id == data.user_id` e
-`account_type == user`. A conta de liquidacao Lightning e configurada por
-`LIGHTNING_SETTLEMENT_ACCOUNT_ID` e precisa ter saldo disponivel suficiente.
+`account_type == user`. O Ledger guarda a origem e as referencias externas,
+mas nao controla a wallet ou a liquidez Lightning do PLS.
 
 Idempotencia:
 
@@ -693,6 +689,10 @@ O consumidor roda no entrypoint quando
 O modulo responsavel e `ledger.payment_consumer`, que consome
 `PAYMENT_EVENTS_QUEUE` via FastStream/RabbitMQ e delega a aplicacao contabil
 para `ledger.payment_events`.
+
+O mesmo consumidor processa `payment.sent` quando o evento possui
+`payment_reference`: ele localiza o hold de retirada, registra um
+`external_debit` e consome a reserva do usuario.
 
 ---
 

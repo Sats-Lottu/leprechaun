@@ -628,6 +628,7 @@ async def test_handle_payment_commands_dispatches_pay_invoice(
             "payment_request": "lnbc1",
             "user_id": "user-1",
             "amount_msat": 1000,
+            "payment_reference": "withdrawal-1",
         },
         msg_type="payment.invoice.pay",
     )
@@ -1012,6 +1013,7 @@ async def test_handle_pay_invoice_publishes_payment_sent(
             "payment_request": "lnbc1",
             "user_id": "user-1",
             "amount_msat": 1000,
+            "payment_reference": "withdrawal-1",
         },
         msg_type="payment.invoice.pay",
     )
@@ -1029,6 +1031,9 @@ async def test_handle_pay_invoice_publishes_payment_sent(
     assert wallet.payment_request == "lnbc1"
     assert published_events[0].meta.type == "payment.sent"
     assert published_events[0].data["payment_hash"] == "hash-pay"
+    assert (
+        published_events[0].data["payment_reference"] == "withdrawal-1"
+    )
     assert response.body["checking_id"] == "chk-pay"
 
 

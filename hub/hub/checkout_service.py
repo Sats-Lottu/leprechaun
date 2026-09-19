@@ -148,6 +148,7 @@ async def prepare_checkout_payment(  # noqa: PLR0913
                 account_id=account.ledger_account_id,
                 amount_msat=plan.internal_amount_msat,
                 reason='checkout',
+                reference_type='checkout_session',
                 reference_id=checkout_session.id,
                 idempotency_key=f'checkout:{checkout_session.id}:hold',
                 expires_at=checkout_session.expires_at,
