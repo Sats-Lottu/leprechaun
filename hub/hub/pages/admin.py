@@ -32,7 +32,7 @@ def _require_admin() -> bool:
         ui.button(
             'Go to wallet',
             icon='account_balance_wallet',
-            on_click=lambda: ui.navigate.to('/user/wallet'),
+            on_click=lambda: ui.navigate.to('/'),
         ).props('outline').classes('w-full sm:w-auto')
         return False
 

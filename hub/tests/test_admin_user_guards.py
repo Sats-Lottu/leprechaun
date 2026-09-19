@@ -67,7 +67,7 @@ def test_admin_guard_rejects_user_without_admin_role(monkeypatch) -> None:
     assert not admin._require_admin()  # noqa: SLF001
     assert 'Admin role is required.' in fake_ui.labels
     assert 'Go to wallet' in fake_ui.buttons
-    assert '/user/wallet' in fake_ui.navigation
+    assert '/' in fake_ui.navigation
 
 
 def test_admin_guard_accepts_admin(monkeypatch) -> None:

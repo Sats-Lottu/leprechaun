@@ -97,9 +97,13 @@ def _require_user() -> str | None:
 
 @router.page('/wallet')
 async def wallet_page() -> None:
+    await render_wallet_page(active_path='/')
+
+
+async def render_wallet_page(*, active_path: str) -> None:
     with app_layout(
         title='Wallet',
-        active_path='/user/wallet',
+        active_path=active_path,
         area='User',
         nav_items=USER_NAV_ITEMS,
     ):

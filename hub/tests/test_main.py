@@ -32,6 +32,10 @@ def test_app_registers_auth_routes() -> None:
     assert '/api/checkout/sessions/{session_id}/settle' in paths
 
 
+def test_logo_asset_is_available() -> None:
+    assert (main.static_directory / 'leprechaun-logo.png').is_file()
+
+
 def test_app_installs_session_middleware() -> None:
     assert any(
         middleware.cls is SessionMiddleware

@@ -26,7 +26,7 @@ class NavItem:
 
 
 USER_NAV_ITEMS = (
-    NavItem('Wallet', 'account_balance_wallet', '/user/wallet'),
+    NavItem('Wallet', 'account_balance_wallet', '/'),
     NavItem('Checkout', 'shopping_cart_checkout', '/user/checkout'),
     NavItem('Profile', 'account_circle', '/user/profile'),
 )
@@ -52,6 +52,7 @@ def app_layout(
     area: str,
     nav_items: tuple[NavItem, ...],
 ) -> Iterator[None]:
+    is_admin_area = area == 'Admin'
     ui.colors(
         primary='#f5b400',
         secondary='#2f3440',
@@ -67,11 +68,8 @@ def app_layout(
         f'{HEADER_CLASS} text-white border-b border-gray-700 px-3 md:px-6'
     ):
         with ui.row().classes('w-full items-center gap-3 no-wrap'):
-            ui.button(
-                icon='menu',
-                on_click=lambda: drawer.toggle(),  # noqa: PLW0108
-                color=None,
-            ).props('flat round').classes('text-white')
+            if is_admin_area:
+                _drawer_button(lambda: drawer.toggle())  # noqa: PLW0108
             logo_placeholder(size='sm')
             with ui.column().classes('gap-0 min-w-0'):
                 ui.label(PROJECT_NAME).classes(
@@ -84,9 +82,13 @@ def app_layout(
                 icon='logout',
                 on_click=lambda: ui.navigate.to('/auth/logout'),
             ).props('flat').classes('hidden sm:flex text-white')
+            if not is_admin_area:
+                _drawer_button(lambda: drawer.toggle())  # noqa: PLW0108
 
-    with ui.left_drawer(value=False).classes(
-        f'{BG_CLASS} text-white w-72 p-0 border-r border-gray-700'
+    drawer_factory = ui.left_drawer if is_admin_area else ui.right_drawer
+    border_class = 'border-r' if is_admin_area else 'border-l'
+    with drawer_factory(value=False).classes(
+        f'{BG_CLASS} text-white w-72 p-0 {border_class} border-gray-700'
     ) as drawer:
         with ui.column().classes('w-full min-h-full justify-between gap-0'):
             with ui.column().classes('w-full gap-0'):
@@ -99,7 +101,11 @@ def app_layout(
                     ui.label(_session_label()).classes('text-xs text-white/60')
 
                 for item in nav_items:
-                    _nav_link(item, active_path)
+                    _nav_link(
+                        item,
+                        active_path,
+                        right_aligned=not is_admin_area,
+                    )
 
                 if area != 'Admin' and is_admin():
                     ui.separator().classes('bg-gray-700 my-2')
@@ -110,6 +116,7 @@ def app_layout(
                             '/admin/users',
                         ),
                         active_path,
+                        right_aligned=True,
                     )
 
             with ui.column().classes('w-full px-4 py-4 gap-2'):
@@ -129,8 +136,24 @@ def app_layout(
         yield
 
 
-def _nav_link(item: NavItem, active_path: str) -> None:
-    active_classes = f'{HEADER_CLASS} text-white border-l-4 border-[#f5b400]'
+def _drawer_button(on_click) -> None:
+    ui.button(
+        icon='menu',
+        on_click=on_click,
+        color=None,
+    ).props('flat round').classes('text-white')
+
+
+def _nav_link(
+    item: NavItem,
+    active_path: str,
+    *,
+    right_aligned: bool = False,
+) -> None:
+    active_border = 'border-r-4' if right_aligned else 'border-l-4'
+    active_classes = (
+        f'{HEADER_CLASS} text-white {active_border} border-[#f5b400]'
+    )
     inactive_classes = 'text-white/70 hover:bg-[#2c2a2b] hover:text-white'
     state_classes = (
         active_classes if item.path == active_path else inactive_classes
@@ -149,8 +172,7 @@ def _session_label() -> str:
 
 
 def logo_placeholder(*, size: str = 'md') -> None:
-    size_class = 'w-7 h-7 text-sm' if size == 'sm' else 'w-9 h-9 text-base'
-    ui.label('L').classes(
-        f'{size_class} rounded-lg border border-[#f5b400] bg-[#2f3440] '
-        f'{ACCENT_TEXT_CLASS} font-bold flex items-center justify-center'
-    )
+    size_class = 'w-9 h-9' if size == 'sm' else 'w-12 h-12'
+    ui.image('/static/leprechaun-logo.png').props(
+        'fit=contain no-spinner'
+    ).classes(f'{size_class} shrink-0')

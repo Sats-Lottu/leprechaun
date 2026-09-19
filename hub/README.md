@@ -6,7 +6,8 @@ reservas e liquidação no Ledger e solicita invoices ao PLS via RabbitMQ.
 
 ## Interfaces
 
-- `/user/wallet`: saldo, extrato e fluxos de depósito e saque.
+- `/`: wallet com saldo, extrato e fluxos de depósito e saque.
+- `/user/wallet`: rota de compatibilidade para a wallet.
 - `/user/checkout?session_id=UUID`: confirmação e acompanhamento da cobrança.
 - `/user/profile`: identidade do usuário e histórico.
 - `/admin/applications`: cadastro de aplicações, ativação, desativação, troca de
