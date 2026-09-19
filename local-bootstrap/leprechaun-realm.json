@@ -9,8 +9,11 @@
     "publicClient": true,
     "standardFlowEnabled": true,
     "directAccessGrantsEnabled": false,
-    "redirectUris": ["http://localhost:8000/auth/callback"],
-    "webOrigins": ["http://localhost:8000"],
+    "redirectUris": [
+      "http://localhost:8000/auth/callback",
+      "http://127.0.0.1:8000/auth/callback"
+    ],
+    "webOrigins": ["http://localhost:8000", "http://127.0.0.1:8000"],
     "attributes": {"pkce.code.challenge.method": "S256"}
   }],
   "users": [{
