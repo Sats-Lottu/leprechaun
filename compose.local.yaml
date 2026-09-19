@@ -39,8 +39,9 @@ services:
   ledger:
     environment:
       PYTHONPATH: /app
-      LIGHTNING_SETTLEMENT_ACCOUNT_ID: 00000000-0000-0000-0000-000000000100
       PAYMENT_EVENT_CONSUMER_ENABLED: 'true'
+    ports:
+      - '127.0.0.1:8001:8000'
     entrypoint: [sh, -ec, 'poetry run alembic upgrade head; poetry run python /bootstrap/seed-ledger.py; exec sh /app/entrypoint.sh']
     volumes:
       - ./local-bootstrap/bootstrap-ledger.py:/bootstrap/seed-ledger.py:ro
@@ -64,10 +65,11 @@ services:
       OIDC_ISSUER: http://localhost:8080/realms/leprechaun
       OIDC_CLIENT_ID: hub-local-client
       OIDC_CLIENT_SECRET: ''
-      LIGHTNING_SETTLEMENT_ACCOUNT_ID: 00000000-0000-0000-0000-000000000100
     depends_on:
       keycloak:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   local_pgdata:

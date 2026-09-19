@@ -22,6 +22,8 @@ Reexecutar o comando preserva os saldos existentes. O script de bancos somente
 e executado pelo PostgreSQL quando o volume esta vazio.
 
 - Hub: http://localhost:8000
+- Ledger API: http://localhost:8001
+- Ledger OpenAPI: http://localhost:8001/docs
 - OIDC: http://localhost:8080
 - LNbits: http://localhost:5000
 - Prometheus: http://localhost:9090
@@ -59,9 +61,9 @@ invoice. O evento percorre LNbits, PLS, RabbitMQ e Ledger. A liquidacao debita
 a conta do usuario e credita a conta do jogo
 `00000000-0000-0000-0000-000000000200`.
 
-A reserva Lightning local e a conta
-`00000000-0000-0000-0000-000000000100`, criada com saldo inicial simulado de
-1.000.000 sats. O bootstrap nao recarrega automaticamente esse saldo.
+Entradas e saidas Lightning sao registradas no Ledger como operacoes de
+fronteira externa. O saldo da wallet FakeWallet e a liquidez simulada pertencem
+ao LNbits/PLS e nao sao representados por uma conta de reserva no Ledger.
 
 Para gerar uma invoice destinada a um teste de saque:
 
@@ -100,9 +102,11 @@ antigos; `python -m pytest` evita esses launchers.
 ## Limites atuais
 
 O ambiente local valida a integracao, mas nao representa prontidao de producao.
-Antes de usar fundos reais ainda e necessario concluir reserva e recuperacao duravel do saque, recuperacao de falhas entre
-liquidacoes parciais e testes de concorrencia e redelivery. O saque atual envia
-o pagamento antes de registrar o debito e nao deve operar com fundos reais.
+Antes de usar fundos reais ainda e necessario concluir a recuperacao duravel de
+timeout e falhas no saque, a recuperacao entre liquidacoes parciais e os testes
+de concorrencia e redelivery. O saque reserva saldo antes de chamar o PLS e o
+Ledger consome a reserva ao receber `payment.sent`, mas interrupcoes entre esses
+passos ainda precisam de tratamento operacional.
 As confirmacoes externas e a reconciliacao contabil precisam continuar sendo
 as fontes de verificacao.
 
