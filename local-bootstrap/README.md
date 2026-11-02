@@ -7,7 +7,7 @@
 | Arquivo | Finalidade |
 | --- | --- |
 | `init-databases.sql` | Cria os bancos dos serviços na primeira inicialização do PostgreSQL. Não insere saldo; também é utilizado pelo Compose base. |
-| `leprechaun-realm.json` | Configura o realm OIDC, o cliente do Hub e o usuário de demonstração. |
+| `start-satoidc-local.py` | Aplica migrações do SatOIDC, provisiona o administrador, o usuário de demonstração e o cliente OIDC do Hub e inicia o provedor. |
 | `bootstrap-lnbits.py` | Prepara o LNbits FakeWallet local e grava a configuração gerada no volume local. |
 | `bootstrap-ledger.py` | Cria contas de demonstração e a reserva com saldo fictício. |
 | `start-pls-local.py` | Inicia o PLS com as credenciais geradas pelo bootstrap local. |
@@ -15,8 +15,12 @@
 
 Na raiz do repositório:
 
+Mantenha o checkout do SatOIDC em `../satoidc` ou configure
+`SATOIDC_SOURCE_DIR` no ambiente do Compose. O provedor usa um volume próprio
+para preservar usuários, cliente e chaves entre reinicializações.
+
 ```sh
-docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
 ```
 
 Depois de cadastrar a aplicação de demonstração e configurar sua chave de API:

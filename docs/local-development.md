@@ -5,33 +5,55 @@
 > Execute somente em ambiente local isolado, sem fundos reais.
 
 
-Este ambiente usa Keycloak e LNbits FakeWallet. Os saldos sao ficticios.
+Este ambiente usa SatOIDC e LNbits FakeWallet. Os saldos sao ficticios.
 Requer Docker Compose e Python 3.11+ para o comando de demonstracao.
+
+O codigo do SatOIDC deve estar em `../satoidc`, ao lado deste repositorio.
+Para outro local, configure `SATOIDC_SOURCE_DIR` no arquivo de ambiente usado
+pelo Compose. O build utiliza `satoidc/DockerFile` desse checkout.
 
 ## Iniciar
 
 Na raiz do repositorio:
 
 ```sh
-docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
 ```
 
 O projeto Compose `leprechaun-local` usa volumes separados. A inicializacao cria
 os bancos, aplica migracoes, configura a wallet LNbits e cria as contas locais.
+O bootstrap do SatOIDC cria o administrador, o usuario de demonstracao e o
+cliente publico `leprechaun-hub`, com Authorization Code e PKCE S256.
 Reexecutar o comando preserva os saldos existentes. O script de bancos somente
 e executado pelo PostgreSQL quando o volume esta vazio.
 
 - Hub: http://localhost:8000
 - Ledger API: http://localhost:8001
 - Ledger OpenAPI: http://localhost:8001/docs
-- OIDC: http://localhost:8080
+- SatOIDC: http://localhost:8080
 - LNbits: http://localhost:5000
 - Prometheus: http://localhost:9090
 
-Login no Hub: `player` / `local-player-password`.
-Administracao local do Keycloak: `admin` / `local-admin-password`.
+Login no Hub via SatOIDC: `player` / `Local-player-123!`.
+Administracao local do SatOIDC: `localadmin` / `Local-admin-123!`.
 LNbits local: `localadmin` / `local-lnbits-password`.
 Essas credenciais sao exclusivas do ambiente de desenvolvimento.
+
+Use `http://localhost:8000` para abrir o Hub: o callback cadastrado no cliente
+e exatamente `http://localhost:8000/auth/callback`. Na primeira entrada, autorize
+o compartilhamento de identidade e perfil na tela de consentimento do SatOIDC.
+O usuario de demonstracao tem subject `00000000-0000-0000-0000-000000000300`.
+Os papeis administrativos do Hub continuam sendo concedidos no banco do Hub;
+ser administrador no SatOIDC nao concede acesso administrativo ao Leprechaun.
+
+O issuer publico e `http://localhost:8080`. Dentro do Docker, o Hub usa
+`http://satoidc:8000` para discovery, token, UserInfo e JWKS. A configuracao
+`OIDC_INTERNAL_BASE_URL` altera somente os endpoints de servidor; o issuer,
+o endereco de autorizacao e a validacao da assinatura permanecem publicos.
+Discovery com issuer diferente do configurado e rejeitado.
+O override local habilita `AUTHLIB_INSECURE_TRANSPORT=1` somente no SatOIDC
+para aceitar HTTP na rede isolada de desenvolvimento. Em producao, use HTTPS
+e nao habilite essa opcao.
 
 ## Demonstrar uma compra
 
@@ -83,8 +105,9 @@ docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml dow
 ```
 
 `lnbits-init` terminar com codigo zero e esperado. `down` preserva os volumes.
-O Keycloak local reimporta o realm quando seu container e recriado; use-o apenas
-para as identidades de demonstracao.
+O volume `local_satoidcdata` preserva identidades, cadastro do cliente e chaves
+de assinatura do SatOIDC. O bootstrap preserva registros existentes, sem trocar
+senhas ou recriar identidades a cada inicializacao.
 
 ## Testes
 
@@ -111,5 +134,5 @@ As confirmacoes externas e a reconciliacao contabil precisam continuar sendo
 as fontes de verificacao.
 
 Referencias de configuracao:
-[Keycloak em containers](https://www.keycloak.org/server/containers) e
+[SatOIDC](http://localhost:8080/.well-known/openid-configuration) e
 [LNbits FakeWallet](https://docs.lnbits.org/guide/wallets.html).

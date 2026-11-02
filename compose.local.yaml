@@ -7,18 +7,38 @@ services:
     volumes:
       - local_pgdata:/var/lib/postgresql/data
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.7.3
-    command: [start-dev, --import-realm]
+  satoidc:
+    build:
+      context: ${SATOIDC_SOURCE_DIR:-../satoidc}
+      dockerfile: satoidc/DockerFile
+    entrypoint: [poetry, run, python, /bootstrap/start-satoidc.py]
     environment:
-      KC_HOSTNAME: http://localhost:8080
-      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: local-admin-password
+      PYTHONPATH: /app
+      APP_ENV: development
+      # Isolated HTTP development network only; production must use HTTPS.
+      AUTHLIB_INSECURE_TRANSPORT: '1'
+      DOMAIN: localhost
+      DATABASE_URL: sqlite+aiosqlite:////home/appuser/satoidc.db
+      SYNC_DATABASE_URL: sqlite:////home/appuser/satoidc.db
+      OAUTH2_JWT_ISS: http://localhost:8080
+      OAUTH2_JWT_SECRET_KEY: local-satoidc-signing-secret-development-only
+      SESSION_MIDDLEWARE_SECRET_KEY: local-satoidc-session-secret-development-only
+      SESSION_COOKIE_HTTPS_ONLY: 'false'
+      EMAIL_SENDER_MODE: disabled
+      SATOIDC_ADMIN_USERNAME: localadmin
+      SATOIDC_ADMIN_EMAIL: admin@example.com
+      SATOIDC_ADMIN_PASSWORD: Local-admin-123!
     ports:
-      - '127.0.0.1:8080:8080'
+      - '127.0.0.1:8080:8000'
     volumes:
-      - ./local-bootstrap/leprechaun-realm.json:/opt/keycloak/data/import/leprechaun-realm.json:ro
+      - local_satoidcdata:/home/appuser
+      - ./local-bootstrap/start-satoidc-local.py:/bootstrap/start-satoidc.py:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/.well-known/openid-configuration', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
 
   lnbits:
     ports:
@@ -61,13 +81,14 @@ services:
 
   hub:
     environment:
-      OIDC_SERVER_METADATA_URL: http://keycloak:8080/realms/leprechaun/.well-known/openid-configuration
-      OIDC_ISSUER: http://localhost:8080/realms/leprechaun
-      OIDC_CLIENT_ID: hub-local-client
+      OIDC_SERVER_METADATA_URL: http://satoidc:8000/.well-known/openid-configuration
+      OIDC_ISSUER: http://localhost:8080
+      OIDC_INTERNAL_BASE_URL: http://satoidc:8000
+      OIDC_CLIENT_ID: leprechaun-hub
       OIDC_CLIENT_SECRET: ''
     depends_on:
-      keycloak:
-        condition: service_started
+      satoidc:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
 
@@ -75,3 +96,4 @@ volumes:
   local_pgdata:
   local_lnbitsdata:
   local_config:
+  local_satoidcdata:

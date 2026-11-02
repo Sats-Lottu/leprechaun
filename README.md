@@ -32,7 +32,7 @@ Em uma instalação do Leprechaun, o operador pode:
 Self-hosted significa que o operador controla a implantação, os bancos de dados,
 o provedor de identidade e a configuração dos serviços de pagamento. Também é
 responsável pela operação, pelas credenciais, pelos backups e pela segurança
-dessa infraestrutura. A configuração local usa Keycloak para autenticação OIDC e
+dessa infraestrutura. A configuração local usa SatOIDC para autenticação OIDC e
 LNbits com FakeWallet para simular pagamentos Lightning.
 
 ## Exemplo: uma loteria com bingo e outros jogos
@@ -96,6 +96,7 @@ a rede de pagamentos:
 | Componente | Responsabilidade |
 | --- | --- |
 | **Hub** | Interface web, autenticação OIDC, administração das aplicações e coordenação do checkout. |
+| **SatOIDC** | Provedor de identidade: login e emissão dos tokens OIDC usados pelo Hub. |
 | **Ledger** | Contas, saldos, reservas, transações, lançamentos e reconciliação financeira. |
 | **PLS** | Payment Lightning Service: integração com LNbits, invoices, pagamentos e confirmação externa. |
 | **RabbitMQ** | Transporte de comandos e eventos entre os serviços. |
@@ -113,14 +114,16 @@ request/reply, eventos e consumo no Ledger estão no
 
 ## Executar localmente
 
-Com Docker e Docker Compose disponíveis, execute na raiz do repositório:
+Com Docker e Docker Compose disponíveis, mantenha o código do SatOIDC em
+`../satoidc` (ou configure `SATOIDC_SOURCE_DIR`) e execute na raiz do repositório:
 
 ```sh
-docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
 ```
 
 Abra [localhost:8000](http://localhost:8000) e entre com `player` /
-`local-player-password`. Essa configuração provisiona OIDC e pagamentos
+`Local-player-123!`. O SatOIDC fica em [localhost:8080](http://localhost:8080).
+Essa configuração provisiona o cliente OIDC do Hub e pagamentos
 simulados, usa saldos fictícios e mantém volumes separados para desenvolvimento.
 Ela não é uma configuração de produção.
 
