@@ -21,8 +21,22 @@ listed in the [README](../README.md#estado-do-projeto).
 
 ## Identity and credentials
 
-Configure the OIDC issuer, discovery URL, client ID, optional client secret, and
-exact callback URL together. The issuer must match the token's `iss` claim.
+Register the Hub as a client in SatOIDC with the exact public callback URL
+`https://<hub-host>/auth/callback`, the `authorization_code` grant, `code`
+response type, and `openid profile` scopes. Configure `OIDC_ISSUER` to match
+SatOIDC's `OAUTH2_JWT_ISS`, `OIDC_SERVER_METADATA_URL` to its
+`/.well-known/openid-configuration`, and `OIDC_CLIENT_ID` to the registered ID.
+Use `client_secret_basic` and `OIDC_CLIENT_SECRET` for a confidential client,
+or `none` with an empty secret for a public client. Both use PKCE S256.
+
+If the Hub reaches SatOIDC through a private address, set
+`OIDC_INTERNAL_BASE_URL` to that base URL and use a reachable discovery URL.
+Only token, UserInfo and JWKS URLs under the public issuer are routed internally;
+discovery with a different issuer or unexpected endpoint is rejected. Leave the
+internal URL empty when the public endpoints are reachable from the Hub.
+The public issuer and browser authorization URL remain unchanged, and signed
+ID tokens must match the configured issuer and client ID. Logout clears the Hub
+session; the user's SatOIDC session is managed by SatOIDC.
 Production-facing authentication needs TLS and secure cookies
 (`SESSION_HTTPS_ONLY=true`), with a reviewed reverse-proxy configuration.
 
@@ -30,6 +44,12 @@ Use separate Ledger tokens per internal service and only the required scopes.
 Grant Hub administrative access through the trusted operator console as described
 in [application integration](application-integration.md). Do not reuse the local
 demonstration user for an actual deployment.
+
+When moving an existing deployment to SatOIDC, review identity mapping before
+allowing payments: Ledger ownership and Hub roles are derived from the subject.
+Existing users are not automatically matched by email or login. Only the isolated
+local demo uses a fixed subject; real identity data requires an operator-managed
+migration and backup.
 
 LNbits supports configured API keys or username/password authentication. Configure
 the intended wallet explicitly. Runtime keys created by the local bootstrap are
