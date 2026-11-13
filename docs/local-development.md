@@ -5,33 +5,68 @@
 > Execute somente em ambiente local isolado, sem fundos reais.
 
 
-Este ambiente usa Keycloak e LNbits FakeWallet. Os saldos sao ficticios.
+Este ambiente usa Keycloak com LNURL-auth, Nostr Auth e o tema Sats Lottu.
+Os pagamentos usam LNbits FakeWallet.
 Requer Docker Compose e Python 3.11+ para o comando de demonstracao.
+
+Mantenha o checkout do tema em `../keycloak-sats-lottu-theme`, ao lado deste
+repositório. Para outro local, configure `KEYCLOAK_THEME_DIR` no arquivo de
+ambiente usado pelo Compose. O build compila o tema e verifica o SHA-256 dos
+JARs publicados das duas extensões antes de instalá-los.
 
 ## Iniciar
 
 Na raiz do repositorio:
 
 ```sh
-docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
 ```
 
 O projeto Compose `leprechaun-local` usa volumes separados. A inicializacao cria
 os bancos, aplica migracoes, configura a wallet LNbits e cria as contas locais.
+O Keycloak importa o realm `leprechaun` com os provedores `lnurl-auth` e `nostr`,
+o usuário de demonstração e o cliente público `leprechaun-hub`. O cliente usa
+Authorization Code com PKCE S256.
 Reexecutar o comando preserva os saldos existentes. O script de bancos somente
 e executado pelo PostgreSQL quando o volume esta vazio.
 
 - Hub: http://localhost:8000
 - Ledger API: http://localhost:8001
 - Ledger OpenAPI: http://localhost:8001/docs
-- OIDC: http://localhost:8080
+- Keycloak: http://localhost:8080
 - LNbits: http://localhost:5000
 - Prometheus: http://localhost:9090
 
-Login no Hub: `player` / `local-player-password`.
-Administracao local do Keycloak: `admin` / `local-admin-password`.
+Se as portas padrão estiverem ocupadas, ajuste `HUB_PORT`, `LEDGER_PORT` e
+`KEYCLOAK_PORT` no ambiente do Compose. Por exemplo, no PowerShell:
+
+```powershell
+$env:HUB_PORT = '18000'
+$env:LEDGER_PORT = '18001'
+$env:KEYCLOAK_PORT = '18080'
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
+```
+
+Use a nova porta do Hub ao cadastrar a aplicação de demonstração. Execute
+`local-demo.py` com o mesmo `HUB_PORT` no ambiente. Se o realm já existir,
+atualize as URLs de callback do cliente `leprechaun-hub` no console do Keycloak.
+
+Login de demonstração no Hub: `player` / `Local-player-123!`.
+Administração local do Keycloak: `localadmin` / `Local-admin-123!`.
 LNbits local: `localadmin` / `local-lnbits-password`.
 Essas credenciais sao exclusivas do ambiente de desenvolvimento.
+
+Abra `http://localhost:8000` para iniciar o login. O tema exibe as opções de
+senha, carteira Lightning e Nostr. Para testar LNURL-auth com uma carteira em
+outro dispositivo, use um Keycloak com hostname HTTPS acessível pela carteira.
+O Nostr Auth aceita extensões de navegador NIP-07 e assinadores remotos NIP-46.
+O usuário de demonstração tem o subject `00000000-0000-0000-0000-000000000300`.
+O Hub concede seus papéis administrativos no próprio banco.
+
+O issuer público é `http://localhost:8080/realms/leprechaun`. Dentro do Docker,
+o Hub consulta o discovery em `http://keycloak:8080/realms/leprechaun`.
+O backchannel dinâmico do Keycloak anuncia os endpoints internos de token,
+UserInfo e JWKS para o Hub. A autorização no navegador usa o hostname público.
 
 ## Demonstrar uma compra
 
@@ -83,8 +118,9 @@ docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml dow
 ```
 
 `lnbits-init` terminar com codigo zero e esperado. `down` preserva os volumes.
-O Keycloak local reimporta o realm quando seu container e recriado; use-o apenas
-para as identidades de demonstracao.
+O volume `local_keycloakdata` preserva identidades, cadastro do cliente e chaves
+de assinatura. O Keycloak pula a importação quando o realm já existe. Edite o
+realm existente no console para aplicar ajustes sem recriar as identidades.
 
 ## Testes
 
@@ -111,5 +147,5 @@ As confirmacoes externas e a reconciliacao contabil precisam continuar sendo
 as fontes de verificacao.
 
 Referencias de configuracao:
-[Keycloak em containers](https://www.keycloak.org/server/containers) e
+[Hostname e backchannel do Keycloak](https://www.keycloak.org/server/hostname) e
 [LNbits FakeWallet](https://docs.lnbits.org/guide/wallets.html).

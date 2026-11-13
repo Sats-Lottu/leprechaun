@@ -8,17 +8,38 @@ services:
       - local_pgdata:/var/lib/postgresql/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.3
+    build:
+      context: ./local-bootstrap
+      dockerfile: keycloak.Dockerfile
+      additional_contexts:
+        theme: ${KEYCLOAK_THEME_DIR:-../keycloak-sats-lottu-theme}
     command: [start-dev, --import-realm]
     environment:
-      KC_HOSTNAME: http://localhost:8080
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: local-admin-password
+      KC_BOOTSTRAP_ADMIN_USERNAME: localadmin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: Local-admin-123!
+      HUB_PORT: ${HUB_PORT:-8000}
+      OIDC_REDIRECT_PATH: ${OIDC_REDIRECT_PATH:-/auth/callback}
     ports:
-      - '127.0.0.1:8080:8080'
+      - '127.0.0.1:${KEYCLOAK_PORT:-8080}:8080'
     volumes:
+      - local_keycloakdata:/opt/keycloak/data
       - ./local-bootstrap/leprechaun-realm.json:/opt/keycloak/data/import/leprechaun-realm.json:ro
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/8080
+          printf 'GET /realms/leprechaun/.well-known/openid-configuration HTTP/1.1\r\nHost: localhost:8080\r\nConnection: close\r\n\r\n' >&3
+          read -r status <&3
+          [[ "$$status" == *" 200 "* ]]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
 
   lnbits:
     ports:
@@ -41,7 +62,7 @@ services:
       PYTHONPATH: /app
       PAYMENT_EVENT_CONSUMER_ENABLED: 'true'
     ports:
-      - '127.0.0.1:8001:8000'
+      - '127.0.0.1:${LEDGER_PORT:-8001}:8000'
     entrypoint: [sh, -ec, 'poetry run alembic upgrade head; poetry run python /bootstrap/seed-ledger.py; exec sh /app/entrypoint.sh']
     volumes:
       - ./local-bootstrap/bootstrap-ledger.py:/bootstrap/seed-ledger.py:ro
@@ -62,12 +83,13 @@ services:
   hub:
     environment:
       OIDC_SERVER_METADATA_URL: http://keycloak:8080/realms/leprechaun/.well-known/openid-configuration
-      OIDC_ISSUER: http://localhost:8080/realms/leprechaun
-      OIDC_CLIENT_ID: hub-local-client
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/leprechaun
+      OIDC_INTERNAL_BASE_URL: ''
+      OIDC_CLIENT_ID: leprechaun-hub
       OIDC_CLIENT_SECRET: ''
     depends_on:
       keycloak:
-        condition: service_started
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
 
@@ -75,3 +97,4 @@ volumes:
   local_pgdata:
   local_lnbitsdata:
   local_config:
+  local_keycloakdata:

@@ -6,7 +6,7 @@ import os
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-HUB = "http://localhost:8000"
+HUB = f"http://localhost:{os.environ.get('HUB_PORT', '8000')}"
 LNBITS = "http://localhost:5000"
 
 

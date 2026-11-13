@@ -7,16 +7,18 @@
 | Arquivo | Finalidade |
 | --- | --- |
 | `init-databases.sql` | Cria os bancos dos serviços na primeira inicialização do PostgreSQL. Não insere saldo; também é utilizado pelo Compose base. |
-| `leprechaun-realm.json` | Configura o realm OIDC, o cliente do Hub e o usuário de demonstração. |
+| `keycloak.Dockerfile` | Instala os JARs verificados de LNURL-auth e Nostr Auth e compila o tema Sats Lottu. |
+| `leprechaun-realm.json` | Importa o realm local com os dois provedores, o cliente OIDC do Hub e o usuário de demonstração. |
 | `bootstrap-lnbits.py` | Prepara o LNbits FakeWallet local e grava a configuração gerada no volume local. |
 | `bootstrap-ledger.py` | Cria contas de demonstração e a reserva com saldo fictício. |
 | `start-pls-local.py` | Inicia o PLS com as credenciais geradas pelo bootstrap local. |
 | `local-demo.py` | Cria cobranças e simula pagamentos para testar compras e saques. |
 
-Na raiz do repositório:
+Mantenha o checkout do tema em `../keycloak-sats-lottu-theme` ou configure
+`KEYCLOAK_THEME_DIR` no ambiente do Compose. Na raiz do repositório:
 
 ```sh
-docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build
+docker compose --env-file .env.example -f compose.yaml -f compose.local.yaml up -d --build --remove-orphans
 ```
 
 Depois de cadastrar a aplicação de demonstração e configurar sua chave de API:

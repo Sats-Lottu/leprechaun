@@ -132,7 +132,7 @@ services:
       dockerfile: hub/DockerFile
     entrypoint: [ "sh", "/app/entrypoint.sh" ]
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${HUB_PORT:-8000}:8000"
     environment:
       DATABASE_URL: ${HUB_DATABASE_URL:?HUB_DATABASE_URL is required}
       RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
