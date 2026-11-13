@@ -1,7 +1,10 @@
+import asyncio
 import logging
 
 from faststream import FastStream
-from faststream.rabbit import RabbitBroker
+from faststream.exceptions import NackMessage
+from faststream.rabbit import RabbitBroker, RabbitQueue
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.models.database import engine
@@ -15,10 +18,15 @@ broker = RabbitBroker(settings.RABBITMQ_URL)
 app = FastStream(broker)
 
 
-@broker.subscriber(settings.PAYMENT_EVENTS_QUEUE)
+@broker.subscriber(RabbitQueue(settings.PAYMENT_EVENTS_QUEUE, durable=True))
 async def handle_payment_event(raw_env: dict) -> None:
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        await process_payment_event(raw_env, session)
+        try:
+            await process_payment_event(raw_env, session)
+        except OperationalError as exc:
+            await session.rollback()
+            await asyncio.sleep(1)
+            raise NackMessage(requeue=True) from exc
 
 
 async def main() -> None:
@@ -33,6 +41,4 @@ async def main() -> None:
 
 
 if __name__ == '__main__':
-    import asyncio
-
     asyncio.run(main())

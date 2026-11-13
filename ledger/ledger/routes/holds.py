@@ -94,6 +94,27 @@ async def create_hold(
     account = await get_account_or_404(
         payload.account_id, session, for_update=True
     )
+    if payload.idempotency_key:
+        existing_hold = await session.scalar(
+            select(BalanceHold).where(
+                BalanceHold.idempotency_key == payload.idempotency_key
+            )
+        )
+        if existing_hold:
+            if getattr(
+                existing_hold, 'idempotency_payload_hash', None
+            ) not in {
+                None,
+                idempotency_payload_hash,
+            }:
+                raise ledger_error(
+                    status.HTTP_409_CONFLICT,
+                    'idempotency_payload_mismatch',
+                    'Idempotency key was reused with a different payload',
+                )
+            return HoldCreated(
+                hold_id=existing_hold.id, status=existing_hold.status
+            )
     if available_balance(account) < payload.amount:
         raise ledger_error(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -186,12 +207,25 @@ async def get_hold(hold_id: UUID, session: Session):
     return hold_details(hold)
 
 
-@router.get("/account/{account_id}", response_model=AccountHolds)
-async def list_account_holds(account_id: UUID, session: Session):
-    await get_account_or_404(account_id, session)
-    holds = await session.scalars(
-        select(BalanceHold).where(BalanceHold.account_id == account_id)
+@router.get('/checkout/{checkout_id}', response_model=HoldDetails | None)
+async def get_checkout_hold(checkout_id: UUID, session: Session):
+    hold = await session.scalar(
+        select(BalanceHold).where(
+            BalanceHold.idempotency_key == f'checkout:{checkout_id}:hold'
+        )
     )
+    return hold_details(hold) if hold is not None else None
+
+
+@router.get("/account/{account_id}", response_model=AccountHolds)
+async def list_account_holds(
+    account_id: UUID, session: Session, hold_status: HoldStatus | None = None
+):
+    await get_account_or_404(account_id, session)
+    query = select(BalanceHold).where(BalanceHold.account_id == account_id)
+    if hold_status is not None:
+        query = query.where(BalanceHold.status == hold_status)
+    holds = await session.scalars(query)
     return AccountHolds(
         account_id=account_id,
         holds=[hold_details(hold) for hold in holds],

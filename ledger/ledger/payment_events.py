@@ -6,8 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ledger.accounts import get_account_or_404
 from ledger.audit import AuditEvent, record_audit_event
-from ledger.balances import credit
+from ledger.balances import available_balance, credit, reserve
 from ledger.models.enums import (
     AccountType,
     EntryType,
@@ -59,8 +60,8 @@ class PaymentSentData(BaseModel):
 
     user_id: UUID | None = None
     payment_reference: UUID | None = None
-    payment_hash: str = ''
-    checking_id: str = ''
+    payment_hash: str | None = None
+    checking_id: str | None = None
     amount_msat: int | None = Field(default=None, gt=0)
     paid_at: datetime
 
@@ -79,13 +80,21 @@ def _uuid_or_none(value: str) -> UUID | None:
 async def _get_user_account_or_none(
     session: AsyncSession,
     owner_id: UUID,
+    *,
+    for_update: bool = False,
 ) -> Account | None:
-    return await session.scalar(
-        select(Account).where(
+    query = (
+        select(Account)
+        .where(
             Account.account_type == AccountType.USER,
             Account.owner_id == owner_id,
             Account.is_active.is_(True),
         )
+        .order_by(Account.created_at, Account.id)
+        .limit(1)
+    )
+    return await session.scalar(
+        query.with_for_update() if for_update else query
     )
 
 
@@ -109,6 +118,9 @@ async def apply_payment_invoice_paid(
         )
         raise
 
+    user_account = await _get_user_account_or_none(
+        session, data.user_id, for_update=True
+    )
     idempotency_key = _event_idempotency_key(data)
     existing_transaction = await session.scalar(
         select(LedgerTransaction).where(
@@ -130,7 +142,6 @@ async def apply_payment_invoice_paid(
         )
         return None
 
-    user_account = await _get_user_account_or_none(session, data.user_id)
     if user_account is None:
         PAYMENT_EVENTS.labels(
             event_type=env.meta.type,
@@ -147,6 +158,7 @@ async def apply_payment_invoice_paid(
         idempotency_key=idempotency_key,
         description=f'Lightning invoice paid {data.invoice_id}',
         posted_at=datetime.now(UTC),
+        external_paid_at=data.paid_at,
     )
     session.add(transaction)
     await session.flush()
@@ -201,9 +213,7 @@ async def apply_payment_sent(
 ) -> LedgerTransaction | None:
     data = PaymentSentData(**env.data)
     if data.payment_reference is None:
-        PAYMENT_EVENTS.labels(
-            event_type=env.meta.type, result='ignored'
-        ).inc()
+        PAYMENT_EVENTS.labels(event_type=env.meta.type, result='ignored').inc()
         return None
     if data.user_id is None or data.amount_msat is None:
         raise RuntimeError(
@@ -232,11 +242,32 @@ async def apply_payment_sent(
             BalanceHold.account_id == user_account.id,
             BalanceHold.reference_type == 'wallet_withdrawal',
             BalanceHold.reference_id == data.payment_reference,
-            BalanceHold.status == HoldStatus.ACTIVE,
         )
         .with_for_update()
     )
     if hold is None:
+        raise RuntimeError('Active wallet withdrawal hold not found')
+    if hold.status == HoldStatus.CONSUMED:
+        # A concurrent delivery may have committed while we waited.
+        if await session.scalar(
+            select(LedgerTransaction.id).where(
+                LedgerTransaction.idempotency_key == idempotency_key
+            )
+        ):
+            return None
+    if hold.status == HoldStatus.EXPIRED:
+        # A withdrawal started by a previous Hub version may have expired.
+        account = await get_account_or_404(
+            hold.account_id, session, for_update=True
+        )
+        if available_balance(account) < hold.amount:
+            raise RuntimeError(
+                'Insufficient funds for expired withdrawal hold'
+            )
+        reserve(account, hold.amount)
+        hold.status = HoldStatus.ACTIVE
+        hold.released_at = None
+    if hold.status != HoldStatus.ACTIVE:
         raise RuntimeError('Active wallet withdrawal hold not found')
     if hold.amount != data.amount_msat:
         raise RuntimeError('Wallet withdrawal amount does not match hold')
@@ -248,6 +279,7 @@ async def apply_payment_sent(
         reference_id=data.payment_reference,
         idempotency_key=idempotency_key,
         description='External Lightning withdrawal',
+        external_paid_at=data.paid_at,
     )
     session.add(transaction)
     await session.flush()

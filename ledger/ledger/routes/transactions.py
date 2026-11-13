@@ -16,6 +16,7 @@ from ledger.balances import (
     credit,
     debit_available,
 )
+from ledger.checkout import CheckoutSettlement, settle_checkout
 from ledger.errors import ledger_error
 from ledger.idempotency import (
     OperationIdempotencyLookup,
@@ -435,6 +436,52 @@ async def create_transaction(
 async def get_transaction(transaction_id: UUID, session: Session):
     transaction = await _get_transaction_or_404(transaction_id, session)
     return _transaction_details(transaction)
+
+
+@router.post(
+    '/checkout/{checkout_id}/settle', response_model=TransactionCreated
+)
+async def settle_checkout_transaction(
+    checkout_id: UUID, payload: CheckoutSettlement, session: Session
+):
+    transaction = await settle_checkout(checkout_id, payload, session)
+    return TransactionCreated(
+        transaction_id=transaction.id, status=transaction.status
+    )
+
+
+@router.get('/checkout/{checkout_id}/settlement')
+async def checkout_settlement_status(checkout_id: UUID, session: Session):
+    key = f'checkout:{checkout_id}:settle'
+    posted = set(
+        await session.scalars(
+            select(LedgerTransaction.idempotency_key).where(
+                LedgerTransaction.idempotency_key.in_((
+                    key,
+                    f'{key}:internal',
+                    f'{key}:external',
+                )),
+                LedgerTransaction.status == TransactionStatus.POSTED,
+            )
+        )
+    )
+    return {
+        'settled': key in posted,
+        'legacy_internal': f'{key}:internal' in posted,
+        'legacy_external': f'{key}:external' in posted,
+    }
+
+
+@router.get('/withdrawal/{reference}/status')
+async def withdrawal_status(reference: UUID, session: Session):
+    key = f'payment.sent:{reference}'
+    transaction = await session.scalar(
+        select(LedgerTransaction.id).where(
+            LedgerTransaction.idempotency_key == key,
+            LedgerTransaction.status == TransactionStatus.POSTED,
+        )
+    )
+    return {'status': 'paid' if transaction is not None else 'pending'}
 
 
 @router.post("/{transaction_id}/post", response_model=TransactionDetails)

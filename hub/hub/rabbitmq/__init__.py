@@ -4,7 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from faststream import Context
-from faststream.rabbit import RabbitBroker
+from faststream.rabbit import RabbitBroker, RabbitQueue
 
 from hub.identity import ledger_owner_id
 from hub.schemas import Envelope, Meta  # seus schemas
@@ -13,7 +13,7 @@ from hub.settings import get_settings
 settings = get_settings()
 broker = RabbitBroker(settings.RABBITMQ_URL)
 
-REPLY_QUEUE = 'payment.response'
+REPLY_QUEUE = f'payment.response.{uuid4().hex}'
 
 # cor_id -> queue
 pending_responses: dict[str, asyncio.Queue[dict[str, Any]]] = {}
@@ -23,7 +23,7 @@ _pending_created_at: dict[str, float] = {}
 _PENDING_TTL_SEC = 60.0  # só pra segurança; timeout real é do wait_for()
 
 
-@broker.subscriber(REPLY_QUEUE)
+@broker.subscriber(RabbitQueue(REPLY_QUEUE, exclusive=True, auto_delete=True))
 async def consume_payment_responses(
     msg: dict[str, Any],
     cor_id: str | None = Context('message.correlation_id'),
@@ -58,13 +58,14 @@ def _cleanup_stale_pending() -> None:
         _pending_created_at.pop(cid, None)
 
 
-async def request_invoice_rabbitmq(
+async def request_invoice_rabbitmq(  # noqa: PLR0913
     user_id: str,
     amount_msat: int,
     memo: str = 'deposit',
     *,
     expires_in_sec: int = 900,
     timeout_sec: float = 10.0,
+    operation_id: str | None = None,
 ) -> dict[str, Any] | None:
     return await _request_payment_command(
         command_type='payment.invoice.create',
@@ -75,6 +76,7 @@ async def request_invoice_rabbitmq(
             'expires_in_sec': expires_in_sec,
         },
         timeout_sec=timeout_sec,
+        operation_id=operation_id,
     )
 
 
@@ -95,6 +97,7 @@ async def request_pay_invoice_rabbitmq(
             'payment_reference': payment_reference,
         },
         timeout_sec=timeout_sec,
+        operation_id=payment_reference,
     )
 
 
@@ -103,6 +106,7 @@ async def _request_payment_command(
     command_type: str,
     data: dict[str, Any],
     timeout_sec: float,
+    operation_id: str | None = None,
 ) -> dict[str, Any] | None:
     correlation_id = str(uuid4())
     response_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -119,7 +123,9 @@ async def _request_payment_command(
             meta=Meta(
                 type=command_type,
                 correlation_id=correlation_id,
-                idempotency_key=f'{command_type}:{correlation_id}',
+                idempotency_key=(
+                    f'{command_type}:{operation_id or correlation_id}'
+                ),
                 producer='hub',  # opcional sobrescrever
             ),
             data=data,

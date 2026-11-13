@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     String,
     UniqueConstraint,
     func,
@@ -147,6 +148,11 @@ class LedgerTransaction(TimestampMixin):
         default=None,
     )
 
+    checkout_invoice_claim: Mapped[UUID | None] = mapped_column(default=None)
+    external_paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     description: Mapped[str] = mapped_column(String(255), default="")
 
     # se esta transação reverte outra
@@ -208,6 +214,7 @@ class OperationIdempotency(TimestampMixin):
 class LedgerEntry(TimestampMixin):
     __tablename__ = "ledger_entries"
     __table_args__ = (
+        Index('ix_ledger_entries_statement', 'account_id', 'created_at', 'id'),
         CheckConstraint(
             "amount > 0", name="ck_ledger_entries_amount_positive"
         ),

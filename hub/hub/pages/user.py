@@ -1,22 +1,18 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import segno
 from nicegui import APIRouter, ui
-from sqlalchemy import func, select
 
 from hub.auth import current_roles, current_user, current_user_sub
 from hub.checkout_service import (
     FINAL_CHECKOUT_STATUSES,
     CheckoutCancellationError,
     CheckoutSessionStateError,
-    CheckoutSettlementError,
     cancel_checkout_payment,
-    expire_if_due,
     get_or_create_user_ledger_account,
     prepare_checkout_payment,
-    settle_checkout_payment,
+    read_checkout,
 )
 from hub.layout import (
     CARD_CLASS,
@@ -29,32 +25,21 @@ from hub.layout import (
 from hub.ledger_client import (
     LedgerClient,
     LedgerClientError,
-    LedgerHoldCreate,
     LedgerHoldDetails,
     LedgerStatementEntry,
 )
 from hub.models.database import session_scope
 from hub.models.enums import CheckoutSessionStatus
 from hub.models.tables import CheckoutSession
-from hub.rabbitmq import (
-    request_invoice_rabbitmq,
-    request_pay_invoice_rabbitmq,
+from hub.wallet_service import (
+    WalletSnapshot,
+    WalletWithdrawalError,
+    load_wallet_snapshot,
+    request_deposit_invoice,
+    withdraw_wallet_balance,
 )
-from hub.schemas import MSATS_PER_SAT
 
 router = APIRouter(prefix='/user')
-
-
-@dataclass(frozen=True)
-class WalletSnapshot:
-    account_id: UUID
-    available_balance_msat: int
-    reserved_balance_msat: int
-    total_balance_msat: int
-    open_invoice_count: int
-    active_holds: tuple[LedgerHoldDetails, ...]
-    statement_entries: tuple[LedgerStatementEntry, ...]
-    recent_checkouts: tuple[CheckoutSession, ...]
 
 
 @dataclass(frozen=True)
@@ -64,20 +49,6 @@ class UserIdentity:
     preferred_username: str
     email: str
     roles: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class WalletWithdrawalResult:
-    hold_id: UUID
-    payment_reference: UUID
-    amount_msat: int
-    payment_hash: str
-    checking_id: str
-    account_id: UUID
-
-
-class WalletWithdrawalError(RuntimeError):
-    pass
 
 
 def _require_user() -> str | None:
@@ -203,7 +174,14 @@ async def checkout_page() -> None:
             CheckoutSessionStatus.RESERVED,
             CheckoutSessionStatus.AWAITING_PAYMENT,
         }:
-            _watch_checkout_payment(session_id)
+            _watch_checkout_payment(
+                session_id,
+                awaiting_invoice=(
+                    checkout_session.status
+                    == CheckoutSessionStatus.AWAITING_PAYMENT
+                    and not checkout_session.payment_request
+                ),
+            )
 
 
 async def _checkout_content(checkout: CheckoutSession) -> None:
@@ -379,7 +357,7 @@ def _checkout_payment_details(checkout, selected):
                 if checkout.payment_request:
                     _payment_request_qr(checkout.payment_request)
                 else:
-                    ui.label('Invoice unavailable. Reload to retry.').classes(
+                    ui.label('Preparing your Lightning invoice…').classes(
                         MUTED_TEXT_CLASS
                     )
             with ui.column().classes('w-full min-w-0 gap-3'):
@@ -428,6 +406,7 @@ async def _cancel_checkout(session_id: UUID) -> None:
             result = await cancel_checkout_payment(
                 checkout_session_id=session_id,
                 session=session,
+                user_sub=user_sub,
             )
             ui.navigate.to(result.cancel_url)
     except (
@@ -442,7 +421,9 @@ async def _cancel_checkout(session_id: UUID) -> None:
         )
 
 
-def _watch_checkout_payment(session_id: UUID) -> None:
+def _watch_checkout_payment(
+    session_id: UUID, *, awaiting_invoice: bool = False
+) -> None:
     in_flight = False
 
     async def check_payment():
@@ -460,7 +441,9 @@ def _watch_checkout_payment(session_id: UUID) -> None:
             elif checkout.status == CheckoutSessionStatus.SETTLED:
                 timer.cancel()
                 ui.navigate.to(checkout.return_url)
-            elif checkout.status not in {
+            elif (
+                awaiting_invoice and checkout.payment_request
+            ) or checkout.status not in {
                 CheckoutSessionStatus.RESERVED,
                 CheckoutSessionStatus.AWAITING_PAYMENT,
             }:
@@ -522,138 +505,6 @@ async def profile_page() -> None:
                 'Detailed history',
                 'Profile and ledger history will appear here.',
             )
-
-
-async def load_wallet_snapshot(
-    *,
-    user_sub: str,
-    session,
-    ledger: LedgerClient,
-) -> WalletSnapshot:
-    account = await get_or_create_user_ledger_account(
-        user_sub=user_sub,
-        session=session,
-        ledger=ledger,
-    )
-    balance = await ledger.get_balance(account.ledger_account_id)
-    holds = await ledger.list_holds(account.ledger_account_id)
-    statement_entries = await ledger.get_statement(account.ledger_account_id)
-    recent_checkouts = tuple(
-        await session.scalars(
-            select(CheckoutSession)
-            .where(CheckoutSession.user_id == user_sub)
-            .order_by(CheckoutSession.created_at.desc())
-            .limit(5)
-        )
-    )
-    open_invoice_count = int(
-        await session.scalar(
-            select(func.count(CheckoutSession.id)).where(
-                CheckoutSession.user_id == user_sub,
-                CheckoutSession.invoice_id.is_not(None),
-                (
-                    CheckoutSession.status
-                    == CheckoutSessionStatus.AWAITING_PAYMENT
-                ),
-            )
-        )
-        or 0
-    )
-    return WalletSnapshot(
-        account_id=account.ledger_account_id,
-        available_balance_msat=balance.available_balance_msat,
-        reserved_balance_msat=balance.reserved_balance_msat,
-        total_balance_msat=balance.balance_msat,
-        open_invoice_count=open_invoice_count,
-        active_holds=tuple(hold for hold in holds if hold.status == 'active'),
-        statement_entries=tuple(statement_entries[:10]),
-        recent_checkouts=recent_checkouts,
-    )
-
-
-async def request_deposit_invoice(
-    *,
-    user_sub: str,
-    amount_sats: int,
-    memo: str = '',
-    invoice_requester=request_invoice_rabbitmq,
-) -> dict[str, str] | None:
-    if amount_sats <= 0:
-        raise ValueError('amount_sats must be positive')
-    response = await invoice_requester(
-        user_id=user_sub,
-        amount_msat=amount_sats * MSATS_PER_SAT,
-        memo=memo.strip() or 'deposit',
-    )
-    if not response:
-        return None
-    return {
-        'invoice_id': str(response.get('invoice_id') or ''),
-        'payment_request': str(response.get('payment_request') or ''),
-        'expires_at': str(response.get('expires_at') or ''),
-    }
-
-
-async def withdraw_wallet_balance(  # noqa: PLR0913
-    *,
-    user_sub: str,
-    amount_sats: int,
-    payment_request: str,
-    ledger: LedgerClient,
-    session,
-    payout_requester=request_pay_invoice_rabbitmq,
-) -> WalletWithdrawalResult | None:  # noqa: PLR0913
-    if amount_sats <= 0:
-        raise ValueError('amount_sats must be positive')
-
-    normalized_payment_request = payment_request.strip()
-    if not normalized_payment_request:
-        raise ValueError('payment_request is required')
-
-    account = await get_or_create_user_ledger_account(
-        user_sub=user_sub,
-        session=session,
-        ledger=ledger,
-    )
-    amount_msat = amount_sats * MSATS_PER_SAT
-    balance = await ledger.get_balance(account.ledger_account_id)
-    if balance.available_balance_msat < amount_msat:
-        raise WalletWithdrawalError('insufficient available balance')
-
-    payment_reference = uuid4()
-    hold = await ledger.create_hold(
-        LedgerHoldCreate(
-            account_id=account.ledger_account_id,
-            amount_msat=amount_msat,
-            reason='wallet withdrawal',
-            reference_type='wallet_withdrawal',
-            reference_id=payment_reference,
-            idempotency_key=f'wallet-withdrawal:{payment_reference}:hold',
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
-        )
-    )
-
-    payout = await payout_requester(
-        user_id=user_sub,
-        payment_request=normalized_payment_request,
-        amount_msat=amount_msat,
-        payment_reference=str(payment_reference),
-    )
-    if not payout:
-        return None
-
-    payment_hash = str(payout.get('payment_hash') or '')
-    checking_id = str(payout.get('checking_id') or '')
-    if not (checking_id or payment_hash):
-        raise WalletWithdrawalError('PLS did not return a payout reference')
-    return WalletWithdrawalResult(
-        hold_id=hold.hold_id,
-        payment_reference=payment_reference,
-        amount_msat=amount_msat,
-        payment_hash=payment_hash,
-        checking_id=checking_id,
-        account_id=account.ledger_account_id,
-    )
 
 
 def _summary_tile(title: str, value: str, description: str) -> None:
@@ -871,20 +722,19 @@ def _wallet_withdraw_panel(
                 return
 
             if result is None:
-                status_label.text = 'Status: timeout waiting for PLS'
+                status_label.text = 'Status: withdrawal pending'
                 ui.notify(
-                    'PLS did not confirm the withdrawal in time.',
-                    type='negative',
+                    'The withdrawal is being processed in the background.',
+                    type='info',
                 )
                 return
 
             payout_reference = result.checking_id or result.payment_hash or '-'
             payout_label.text = f'Payment reference: {payout_reference}'
             transaction_label.text = f'Ledger hold: {result.hold_id}'
-            status_label.text = 'Status: withdrawal sent; settling ledger'
+            status_label.text = 'Status: withdrawal completed'
             ui.notify(
-                'Lightning withdrawal sent. Ledger settlement is '
-                'asynchronous.',
+                'Lightning withdrawal completed.',
                 type='positive',
             )
 
@@ -1030,16 +880,9 @@ def _format_optional_datetime(value) -> str:
 async def _load_checkout_session(
     session_id: UUID,
 ) -> CheckoutSession | None:
-    user_sub = current_user_sub()
-    if user_sub is not None:
-        return await _prepare_checkout_session_for_user(
-            session_id=session_id,
-            user_sub=user_sub,
-        )
-
-    async with session_scope() as db_session:
-        return await db_session.scalar(
-            select(CheckoutSession).where(CheckoutSession.id == session_id)
+    async with session_scope() as session:
+        return await read_checkout(
+            session_id, session, user_sub=current_user_sub()
         )
 
 
@@ -1051,53 +894,23 @@ async def _prepare_checkout_session_for_user(  # noqa: PLR0911
     use_balance: bool = True,
 ) -> CheckoutSession | None:
     try:
-        async with session_scope() as db_session:
-            existing = await db_session.get(CheckoutSession, session_id)
-            if existing is None:
-                return None
-            if existing.user_id not in {None, user_sub}:
-                ui.notify(
-                    'This checkout belongs to another user.', type='negative'
+        async with session_scope() as session:
+            if not confirm:
+                return await read_checkout(
+                    session_id, session, user_sub=user_sub
                 )
-                return None
-            if expire_if_due(existing):
-                await db_session.commit()
-            if (
-                existing.status == CheckoutSessionStatus.CREATED
-                and not confirm
-            ):
-                return existing
             preparation = await prepare_checkout_payment(
                 checkout_session_id=session_id,
                 user_sub=user_sub,
-                session=db_session,
+                session=session,
                 use_balance=use_balance,
             )
-            checkout_session = preparation.session
-            if checkout_session.status not in {
-                CheckoutSessionStatus.RESERVED,
-                CheckoutSessionStatus.AWAITING_PAYMENT,
-            }:
-                return checkout_session
-            try:
-                return await settle_checkout_payment(
-                    checkout_session_id=session_id,
-                    session=db_session,
-                )
-            except (
-                CheckoutSessionStateError,
-                CheckoutSettlementError,
-                LedgerClientError,
-            ):
-                return checkout_session
-    except CheckoutSessionStateError:
-        async with session_scope() as db_session:
-            return await db_session.scalar(
-                select(CheckoutSession).where(CheckoutSession.id == session_id)
-            )
+            return preparation.session
+    except CheckoutSessionStateError as exc:
+        ui.notify(f'Checkout unavailable: {exc.status}.', type='negative')
     except (LedgerClientError, LookupError):
         ui.notify('Could not prepare checkout.', type='negative')
-        return None
+    return None
 
 
 def _current_user_identity() -> UserIdentity:

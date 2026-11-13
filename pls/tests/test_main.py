@@ -1,4 +1,5 @@
 import asyncio
+from http import HTTPStatus
 
 import pytest
 from faststream import Response
@@ -30,11 +31,19 @@ from pls.models.tables import (
     ProviderEvent,
 )
 from pls.provider import LNbitsConfig
-from pls.schemas import Failed, Payment, WalletResponse
+from pls.schemas import Failed, Payment, PaymentDecoded, WalletResponse
 
 
 class FakePayWallet:
-    async def pay_invoice(self, payment_request):
+    @staticmethod
+    async def decode_invoice(_payment_request, **_kwargs):
+        return PaymentDecoded(payment_hash='hash-pay', amount_msat=1000)
+
+    @staticmethod
+    async def get_payment(_payment_hash, **_kwargs):
+        return Failed(detail='missing', http_status=HTTPStatus.NOT_FOUND)
+
+    async def pay_invoice(self, payment_request, **_kwargs):
         self.payment_request = payment_request
         return Payment(
             payment_hash="hash-pay", checking_id="chk-pay", paid=True
@@ -61,7 +70,7 @@ class FakeReconciliationWallet:
 
 class FailingBroker:
     @staticmethod
-    async def publish(_body, *, queue):
+    async def publish(_body, *, queue, **_kwargs):
         assert queue == outbox.settings.PAYMENT_EVENTS_QUEUE
         raise RuntimeError("rabbit down")
 
@@ -136,9 +145,11 @@ def test_observability_send_text_writes_http_response():
     handler = object.__new__(observability.ObservabilityHandler)
     handler.wfile = FakeWriter()
     handler.send_response = lambda status: calls.append(("status", status))
-    handler.send_header = lambda key, value: calls.append(
-        ("header", key, value)
-    )
+    handler.send_header = lambda key, value: calls.append((
+        'header',
+        key,
+        value,
+    ))
     handler.end_headers = lambda: calls.append(("end",))
 
     observability.ObservabilityHandler._send_text(
@@ -561,9 +572,10 @@ async def test_handle_payment_commands_ignores_duplicate_idempotency_key(
             operation="payment.invoice.create",
             idempotency_key="idem-1",
             status=OperationStatus.SUCCEEDED,
-            payload_hash=utils.payload_hash(
-                {"user_id": "user-1", "amount_msat": 1000}
-            ),
+            payload_hash=utils.payload_hash({
+                'user_id': 'user-1',
+                'amount_msat': 1000,
+            }),
         )
     )
     await session.commit()
@@ -825,9 +837,11 @@ async def test_handle_create_invoice_ignores_invalid_payload(
 
     result = await commands.handle_create_invoice(
         command_context(
-            make_envelope(
-                {"user_id": "user-1", "amount_msat": 1000, "extra": True}
-            ),
+            make_envelope({
+                'user_id': 'user-1',
+                'amount_msat': 1000,
+                'extra': True,
+            }),
             wallet,
             correlation_id="corr-1",
         )
@@ -1031,9 +1045,7 @@ async def test_handle_pay_invoice_publishes_payment_sent(
     assert wallet.payment_request == "lnbc1"
     assert published_events[0].meta.type == "payment.sent"
     assert published_events[0].data["payment_hash"] == "hash-pay"
-    assert (
-        published_events[0].data["payment_reference"] == "withdrawal-1"
-    )
+    assert published_events[0].data['payment_reference'] == 'withdrawal-1'
     assert response.body["checking_id"] == "chk-pay"
 
 

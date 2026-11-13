@@ -1,5 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,10 +11,12 @@ from nicegui import ui
 from starlette.middleware.sessions import SessionMiddleware
 
 from hub.auth import callback, login, logout
+from hub.ledger_client import ledger_http_lifespan
 from hub.pages.admin import router as admin_router
 from hub.pages.applications import router as applications_router
 from hub.pages.index import router as index_router
 from hub.pages.user import router as user_router
+from hub.payment_recovery import recover_payments_loop
 from hub.rabbitmq import broker
 from hub.routes.checkout import router as checkout_router
 from hub.settings import get_settings
@@ -21,9 +24,17 @@ from hub.settings import get_settings
 
 @asynccontextmanager
 async def broker_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    async with broker:
+    async with broker, ledger_http_lifespan():
         await broker.start()
-        yield
+        task = asyncio.create_task(
+            recover_payments_loop(), name='payment-recovery'
+        )
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(lifespan=broker_lifespan)

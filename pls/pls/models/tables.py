@@ -115,6 +115,12 @@ class LightningInvoice(TimestampMixin):
         default=None,
     )
 
+    withdrawal_payment_hash: Mapped[str | None] = mapped_column(
+        String(160),
+        unique=True,
+        default=None,
+    )
+
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

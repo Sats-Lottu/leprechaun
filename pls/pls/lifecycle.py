@@ -6,6 +6,7 @@ from faststream import ContextRepo
 
 from pls.lnbits_ws_bridge import LNbitsWSBridge
 from pls.messaging import ws_publisher
+from pls.outbox import drain_outbox
 from pls.provider import LNbitsClient, LNbitsConfig
 from pls.reconciliation import (
     handle_lnbits_wallet_event,
@@ -36,13 +37,16 @@ def create_lnbits_lifespan(cfg: LNbitsConfig):
             name="lnbits-reconciliation",
         )
         context.set_global("lnbits_reconciliation_task", reconciliation_task)
+        outbox_task = asyncio.create_task(drain_outbox(), name='outbox')
 
         try:
             yield
         finally:
             reconciliation_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await reconciliation_task
+            outbox_task.cancel()
+            for task in (reconciliation_task, outbox_task):
+                with suppress(asyncio.CancelledError):
+                    await task
             await ws_bridge.stop()
             await client.stop()
 

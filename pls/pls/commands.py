@@ -1,13 +1,17 @@
 import logging
 from datetime import datetime, timezone
+from http import HTTPStatus
 from uuid import uuid4
 
 from faststream import Context, Response
 from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from pls.contexts import CommandContext, PaymentSentContext
 from pls.idempotency import (
     finish_operation,
+    load_operation,
     operation_is_duplicate,
     start_operation,
 )
@@ -30,6 +34,7 @@ from pls.schemas import (
     InvoiceCreatedData,
     PayInvoiceData,
     PayLNURLData,
+    Payment,
     PaymentSentData,
 )
 from pls.settings import get_settings
@@ -38,6 +43,7 @@ from pls.utils import (
     iso_to_datetime,
     msat_to_sat_floor,
     now_utc_iso,
+    payload_hash,
     retry_provider_call,
 )
 
@@ -72,7 +78,15 @@ async def handle_payment_commands(
             idempotency_key=idempotency_key,
             payload=env.data,
         )
-        if operation_is_duplicate(idempotency):
+        if idempotency and idempotency.payload_hash != payload_hash(env.data):
+            log.warning(
+                'payment_command_payload_mismatch key=%s', idempotency_key
+            )
+            return
+        if (
+            operation_is_duplicate(idempotency)
+            and msg_type != 'payment.invoice.pay'
+        ):
             log.info(
                 "payment_command_duplicate type=%s correlation_id=%s "
                 "idempotency_key=%s",
@@ -81,6 +95,16 @@ async def handle_payment_commands(
                 idempotency_key,
             )
             inc_counter("payment_command_duplicate", command_type=msg_type)
+            if (
+                idempotency.resource_id
+                and reply_to
+                and msg_type == 'payment.invoice.create'
+            ):
+                invoice = await session.get(
+                    LightningInvoice, idempotency.resource_id
+                )
+                if invoice is not None:
+                    return invoice_reply(invoice, correlation_id)
             return
 
         ctx = CommandContext(
@@ -344,6 +368,9 @@ async def handle_pay_invoice(ctx: CommandContext) -> Response | None:
             )
         return None
 
+    if cmd.payment_reference and idempotency is not None:
+        return await process_withdrawal(ctx, cmd)
+
     payment = await retry_provider_call(
         ctx.lnbits_wallet.pay_invoice, cmd.payment_request
     )
@@ -411,6 +438,190 @@ async def handle_pay_invoice(ctx: CommandContext) -> Response | None:
             amount_msat=cmd.amount_msat,
             payment_reference=cmd.payment_reference,
         )
+    )
+
+
+def invoice_reply(invoice: LightningInvoice, correlation_id: str | None):
+    return Response(
+        body=InvoiceCreatedData(
+            user_id=invoice.user_id,
+            invoice_id=invoice.provider_invoice_id or '',
+            payment_request=invoice.payment_request,
+            amount_msat=invoice.amount_msat,
+            expires_at=invoice.expires_at.isoformat()
+            if invoice.expires_at
+            else '',
+        ).model_dump(),
+        correlation_id=correlation_id,
+    )
+
+
+def withdrawal_reply(
+    ctx: CommandContext, status: str, payment: Payment | None = None
+):
+    if ctx.reply_to:
+        return Response(
+            body={
+                'status': status,
+                'payment_hash': (payment.payment_hash or '')
+                if payment
+                else '',
+                'checking_id': (payment.checking_id or '') if payment else '',
+            },
+            correlation_id=ctx.correlation_id,
+        )
+    return None
+
+
+async def fail_withdrawal(
+    ctx: CommandContext, invoice: LightningInvoice | None = None
+):
+    if invoice is not None:
+        invoice.status = InvoiceStatus.FAILED
+    await finish_operation(
+        ctx.session, ctx.idempotency, status=OperationStatus.FAILED
+    )
+    return withdrawal_reply(ctx, 'failed')
+
+
+async def claim_withdrawal(ctx: CommandContext, cmd: PayInvoiceData):
+    decoded = await ctx.lnbits_wallet.decode_invoice(
+        cmd.payment_request,
+        include_error_status=True,
+    )
+    if isinstance(decoded, Failed):
+        if decoded.http_status in {
+            HTTPStatus.BAD_REQUEST,
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+        }:
+            return await fail_withdrawal(ctx)
+        return withdrawal_reply(ctx, 'pending')
+    if (
+        not decoded.payment_hash
+        or decoded.amount_msat != cmd.amount_msat
+        or not cmd.user_id
+    ):
+        return await fail_withdrawal(ctx)
+
+    invoice = LightningInvoice(
+        user_id=cmd.user_id,
+        amount_msat=cmd.amount_msat,
+        direction=PaymentDirection.OUTGOING,
+        payment_hash=decoded.payment_hash,
+        withdrawal_payment_hash=decoded.payment_hash,
+        payment_request=cmd.payment_request,
+        idempotency_key=ctx.env.meta.idempotency_key,
+    )
+    try:
+        async with ctx.session.begin_nested():
+            ctx.session.add(invoice)
+            await ctx.session.flush()
+    except IntegrityError:
+        return await fail_withdrawal(ctx)
+
+    await finish_operation(
+        ctx.session,
+        ctx.idempotency,
+        status=OperationStatus.STARTED,
+        resource_id=invoice.id,
+    )
+    # Persist the invoice hash and its unique owner before calling LNbits.
+    await ctx.session.commit()
+    await load_operation(
+        ctx.session,
+        ctx.env.meta.type,
+        ctx.env.meta.idempotency_key,
+        for_update=True,
+    )
+    return invoice
+
+
+async def process_withdrawal(ctx: CommandContext, cmd: PayInvoiceData):  # noqa: PLR0911
+    if ctx.idempotency.status == OperationStatus.FAILED:
+        return withdrawal_reply(ctx, 'failed')
+    invoice_id = ctx.idempotency.resource_id
+    if invoice_id is None:
+        claim = await claim_withdrawal(ctx, cmd)
+        if not isinstance(claim, LightningInvoice):
+            return claim
+        invoice_id = claim.id
+
+    invoice = (
+        await ctx.session.scalars(
+            select(LightningInvoice)
+            .where(LightningInvoice.id == invoice_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).one()
+    if invoice.status == InvoiceStatus.FAILED:
+        return withdrawal_reply(ctx, 'failed')
+    if invoice.status == InvoiceStatus.PAID:
+        return withdrawal_reply(ctx, 'paid', Payment(**invoice.raw_response))
+
+    result = await check_withdrawal_payment(ctx, cmd, invoice)
+    if isinstance(result, Failed):
+        # The provider may have accepted the request before the timeout.
+        return withdrawal_reply(ctx, 'pending')
+    if result.status == 'failed':
+        return await fail_withdrawal(ctx, invoice)
+    if result.paid is not True and result.status != 'success':
+        return withdrawal_reply(ctx, 'pending', result)
+
+    invoice.status = InvoiceStatus.PAID
+    invoice.paid_at = datetime.now(timezone.utc)
+    invoice.raw_response = result.model_dump()
+    await finish_operation(
+        ctx.session, ctx.idempotency, status=OperationStatus.SUCCEEDED
+    )
+    return await publish_payment_sent(
+        PaymentSentContext(
+            command=ctx,
+            payment=result,
+            user_id=cmd.user_id,
+            amount_msat=cmd.amount_msat,
+            payment_reference=cmd.payment_reference,
+        )
+    )
+
+
+async def check_withdrawal_payment(
+    ctx: CommandContext,
+    cmd: PayInvoiceData,
+    invoice: LightningInvoice,
+) -> Payment | Failed:
+    wallet = ctx.lnbits_wallet
+    result = await wallet.get_payment(
+        invoice.payment_hash, include_error_status=True
+    )
+    if isinstance(result, Failed):
+        if result.http_status != HTTPStatus.NOT_FOUND:
+            return result
+        result = await wallet.pay_invoice(
+            cmd.payment_request, reference=cmd.payment_reference
+        )
+        if isinstance(result, Failed) and result.http_status in {
+            HTTPStatus.BAD_REQUEST,
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+        }:
+            return Payment(status='failed')
+        return result
+
+    details = result.details if isinstance(result.details, dict) else {}
+    extra = details.get('extra') or {}
+    if extra.get('leprechaun_withdrawal') == cmd.payment_reference:
+        return result.model_copy(
+            update={
+                'payment_hash': invoice.payment_hash,
+                'checking_id': details.get('checking_id'),
+            }
+        )
+    # A different payment may have the same hash (for example, an incoming
+    # invoice). Do not interpret its status as confirmation of this withdrawal.
+    if result.paid and details.get('amount', 0) >= 0:
+        return Payment(status='failed')
+    return await wallet.pay_invoice(
+        cmd.payment_request, reference=cmd.payment_reference
     )
 
 

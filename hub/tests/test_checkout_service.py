@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 
+from hub import checkout_service
 from hub.checkout_service import (
     CheckoutCancellationError,
     CheckoutSessionStateError,
@@ -12,16 +14,21 @@ from hub.checkout_service import (
     funding_plan,
     get_or_create_user_ledger_account,
     prepare_checkout_payment,
+    resume_checkout,
     settle_checkout_payment,
 )
-from hub.ledger_client import LedgerAccount, LedgerBalance, LedgerHold
+from hub.ledger_client import (
+    LedgerAccount,
+    LedgerBalance,
+    LedgerClientError,
+    LedgerHold,
+)
 from hub.models.enums import CheckoutSessionStatus
 from hub.models.tables import CheckoutSession
 
 AMOUNT_MSAT = 10_000
 INTERNAL_MSAT = 4_000
 EXTERNAL_MSAT = 6_000
-TRANSACTION_COUNT = 2
 
 
 class FakeLedger:
@@ -234,6 +241,8 @@ async def test_prepare_checkout_payment_expires_before_side_effects(
 @pytest.mark.asyncio
 async def test_cancel_checkout_payment_releases_active_hold() -> None:
     checkout_session = SimpleNamespace(
+        internal_amount_msat=INTERNAL_MSAT,
+        external_amount_msat=0,
         id=UUID('00000000-0000-0000-0000-000000000001'),
         status=CheckoutSessionStatus.AWAITING_PAYMENT,
         ledger_hold_id=UUID('00000000-0000-0000-0000-000000000002'),
@@ -257,6 +266,14 @@ async def test_cancel_checkout_payment_releases_active_hold() -> None:
             self.refreshed = True
 
     class FakeLedger:
+        @staticmethod
+        async def checkout_settlement(_checkout_id):
+            return {
+                'settled': False,
+                'legacy_internal': False,
+                'legacy_external': False,
+            }
+
         def __init__(self) -> None:
             self.released = []
 
@@ -294,6 +311,8 @@ async def test_cancel_checkout_payment_releases_active_hold() -> None:
 @pytest.mark.asyncio
 async def test_cancel_checkout_payment_rejects_consumed_hold() -> None:
     checkout_session = SimpleNamespace(
+        internal_amount_msat=INTERNAL_MSAT,
+        external_amount_msat=0,
         id=UUID('00000000-0000-0000-0000-000000000001'),
         status=CheckoutSessionStatus.AWAITING_PAYMENT,
         ledger_hold_id=UUID('00000000-0000-0000-0000-000000000002'),
@@ -308,6 +327,14 @@ async def test_cancel_checkout_payment_rejects_consumed_hold() -> None:
 
     class FakeLedger:
         @staticmethod
+        async def checkout_settlement(_checkout_id):
+            return {
+                'settled': False,
+                'legacy_internal': False,
+                'legacy_external': False,
+            }
+
+        @staticmethod
         async def get_hold(_hold_id):
             return SimpleNamespace(status='consumed')
 
@@ -320,140 +347,85 @@ async def test_cancel_checkout_payment_rejects_consumed_hold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_settle_checkout_uses_hold_and_posts_external() -> None:
-    checkout_session = SimpleNamespace(
-        id=UUID('00000000-0000-0000-0000-000000000001'),
-        status=CheckoutSessionStatus.AWAITING_PAYMENT,
-        ledger_account_id=UUID('00000000-0000-0000-0000-000000000002'),
-        destination_account_id=UUID('00000000-0000-0000-0000-000000000003'),
-        ledger_hold_id=UUID('00000000-0000-0000-0000-000000000004'),
-        internal_amount_msat=4_000,
-        external_amount_msat=6_000,
-        settled_at=None,
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+async def test_settle_checkout_sends_one_ledger_operation() -> None:
+    checkout = settlement_checkout()
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=checkout), commit=AsyncMock()
     )
-
-    class FakeSession:
-        def __init__(self) -> None:
-            self.committed = False
-
-        @staticmethod
-        async def scalar(_query):
-            return checkout_session
-
-        async def commit(self) -> None:
-            self.committed = True
-
-        @staticmethod
-        async def refresh(_item) -> None:
-            return None
-
-    class FakeLedger:
-        def __init__(self) -> None:
-            self.created_transactions = []
-            self.consumed = []
-            self.posted = []
-
-        @staticmethod
-        async def get_balance(_account_id):
-            return LedgerBalance(
-                balance_msat=10_000,
-                reserved_balance_msat=4_000,
-                available_balance_msat=6_000,
-            )
-
-        async def create_transaction(self, payload):
-            self.created_transactions.append(payload)
-            transaction_id = UUID(
-                '00000000-0000-0000-0000-000000000010'
-                if len(self.created_transactions) == 1
-                else '00000000-0000-0000-0000-000000000011'
-            )
-            return SimpleNamespace(
-                transaction_id=transaction_id,
-                status='pending',
-            )
-
-        async def consume_hold(
-            self,
-            hold_id,
-            *,
-            transaction_id,
-            idempotency_key=None,
-        ):
-            self.consumed.append((hold_id, transaction_id, idempotency_key))
-            return SimpleNamespace(hold_id=hold_id, status='consumed')
-
-        async def post_transaction(
-            self,
-            transaction_id,
-            *,
-            idempotency_key=None,
-        ):
-            self.posted.append((transaction_id, idempotency_key))
-            return SimpleNamespace(
-                transaction_id=transaction_id,
-                status='posted',
-            )
-
-    session = FakeSession()
-    ledger = FakeLedger()
+    ledger = SimpleNamespace(settle_checkout=AsyncMock())
 
     result = await settle_checkout_payment(
-        checkout_session_id=checkout_session.id,
+        checkout_session_id=checkout.id,
         session=session,
         ledger=ledger,
     )
 
     assert result.status == CheckoutSessionStatus.SETTLED
-    assert len(ledger.created_transactions) == TRANSACTION_COUNT
-    assert ledger.consumed == [
-        (
-            checkout_session.ledger_hold_id,
-            UUID('00000000-0000-0000-0000-000000000010'),
-            'checkout:00000000-0000-0000-0000-000000000001:consume:internal',
-        )
-    ]
-    assert ledger.posted == [
-        (
-            UUID('00000000-0000-0000-0000-000000000011'),
-            'checkout:00000000-0000-0000-0000-000000000001:post:external',
-        )
-    ]
-    assert session.committed
+    ledger.settle_checkout.assert_awaited_once_with(
+        checkout.id,
+        {
+            'source_account_id': str(checkout.ledger_account_id),
+            'destination_account_id': str(checkout.destination_account_id),
+            'internal_amount_msat': checkout.internal_amount_msat,
+            'external_amount_msat': checkout.external_amount_msat,
+            'hold_id': str(checkout.ledger_hold_id),
+            'invoice_id': checkout.invoice_id,
+            'expires_at': checkout.expires_at.isoformat(),
+        },
+    )
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_settle_checkout_payment_requires_external_funds() -> None:
-    checkout_session = SimpleNamespace(
-        id=UUID('00000000-0000-0000-0000-000000000001'),
+async def test_settle_checkout_waits_for_its_invoice() -> None:
+    checkout = settlement_checkout()
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=checkout), commit=AsyncMock()
+    )
+    ledger = SimpleNamespace(
+        settle_checkout=AsyncMock(
+            side_effect=LedgerClientError(
+                'invoice not confirmed', code='checkout_invoice_unconfirmed'
+            )
+        )
+    )
+    with pytest.raises(CheckoutSettlementError, match='invoice not confirmed'):
+        await settle_checkout_payment(
+            checkout_session_id=checkout.id,
+            session=session,
+            ledger=ledger,
+        )
+    assert checkout.status == CheckoutSessionStatus.AWAITING_PAYMENT
+    session.commit.assert_not_awaited()
+
+
+def settlement_checkout():
+    return SimpleNamespace(
+        id=UUID(int=1),
         status=CheckoutSessionStatus.AWAITING_PAYMENT,
-        ledger_account_id=UUID('00000000-0000-0000-0000-000000000002'),
-        destination_account_id=UUID('00000000-0000-0000-0000-000000000003'),
-        ledger_hold_id=UUID('00000000-0000-0000-0000-000000000004'),
+        ledger_account_id=UUID(int=2),
+        destination_account_id=UUID(int=3),
+        ledger_hold_id=UUID(int=4),
         internal_amount_msat=4_000,
         external_amount_msat=6_000,
+        invoice_id='invoice-1',
         settled_at=None,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
 
-    class FakeSession:
-        @staticmethod
-        async def scalar(_query):
-            return checkout_session
 
-    class FakeLedger:
-        @staticmethod
-        async def get_balance(_account_id):
-            return LedgerBalance(
-                balance_msat=4_000,
-                reserved_balance_msat=4_000,
-                available_balance_msat=0,
-            )
+@pytest.mark.asyncio
+async def test_recovery_settles_confirmed_checkout_without_browser(
+    monkeypatch,
+):
+    checkout = settlement_checkout()
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=checkout), commit=AsyncMock()
+    )
+    ledger = SimpleNamespace(settle_checkout=AsyncMock())
+    monkeypatch.setattr(checkout_service, 'LedgerClient', lambda: ledger)
 
-    with pytest.raises(CheckoutSettlementError):
-        await settle_checkout_payment(
-            checkout_session_id=checkout_session.id,
-            session=FakeSession(),
-            ledger=FakeLedger(),
-        )
+    await resume_checkout(checkout.id, session)
+
+    assert checkout.status == CheckoutSessionStatus.SETTLED
+    ledger.settle_checkout.assert_awaited_once()

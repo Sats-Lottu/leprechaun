@@ -132,10 +132,10 @@ O [guia de desenvolvimento local](docs/local-development.md) explica o acesso
 administrativo, o cadastro da aplicação de demonstração, a simulação de compras
 e os comandos para inspecionar e parar os serviços.
 
-Consulte [.env.example](.env.example) para as variáveis de configuração. Fora do
-ambiente simulado, a conta de liquidação Lightning precisa existir no Ledger antes
-de habilitar `PAYMENT_EVENT_CONSUMER_ENABLED`. Os serviços internos, incluindo
-Ledger e PLS, devem ser acessados pela rede de serviços, não diretamente pelos jogos.
+Consulte [.env.example](.env.example) para as variáveis de configuração. Ative
+`PAYMENT_EVENT_CONSUMER_ENABLED` no Ledger para processar pagamentos Lightning.
+O Hub cria as contas de usuário conforme necessário. Acesse Ledger e PLS pela
+rede interna de serviços.
 
 ## Desenvolvimento e operação
 
@@ -171,17 +171,17 @@ automatizados e compras simuladas de ponta a ponta.
 
 Antes de operar com fundos reais, ainda é necessário concluir:
 
-- Recuperação durável de timeout e falhas no saque após a reserva prévia.
-- Recuperação de liquidações parcialmente concluídas entre serviços.
 - Validação de concorrência, reentrega de eventos e interrupções de serviços.
 - Configuração e revisão de segurança da implantação, incluindo HTTPS,
   credenciais, permissões, backups e monitoramento.
 - Integração da confirmação financeira com a entrega de cada aplicação,
   incluindo emissão única de apostas e tratamento de compras não emitidas.
 
-O saque reserva saldo antes de chamar o PLS e o Ledger consome a reserva quando
-recebe `payment.sent`. Antes de usar fundos reais, ainda e necessario garantir
-recuperacao duravel para timeout, evento atrasado e falha entre servicos.
+O Hub retoma checkouts e saques pendentes em segundo plano. O Ledger liquida
+cada compra em uma única transação e exige a confirmação da invoice da compra
+quando há complemento Lightning. Em uma atualização de instalações existentes,
+siga a orientação de migração da fila de eventos no
+[contrato de pagamentos](docs/payment-lightning-flow.md).
 
 ## Documentação dos serviços
 

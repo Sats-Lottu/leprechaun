@@ -78,12 +78,15 @@ async def reconcile_lnbits_wallet_event(
     provider_invoice_id = payment.checking_id
     payment_hash = payment.payment_hash
     invoice = await session.scalar(
-        select(LightningInvoice).where(
+        select(LightningInvoice)
+        .where(
+            LightningInvoice.direction == PaymentDirection.INCOMING,
             or_(
                 LightningInvoice.provider_invoice_id == provider_invoice_id,
                 LightningInvoice.payment_hash == payment_hash,
-            )
+            ),
         )
+        .with_for_update()
     )
 
     provider_event = ProviderEvent(
@@ -103,7 +106,11 @@ async def reconcile_lnbits_wallet_event(
         bool(invoice),
     )
 
-    if invoice is None or payment.status != "success":
+    if (
+        invoice is None
+        or invoice.status == InvoiceStatus.PAID
+        or payment.status != 'success'
+    ):
         if payment.status != "success":
             provider_event.status = ProviderEventStatus.FAILED
             provider_event.error_detail = (
@@ -154,8 +161,9 @@ async def reconcile_pending_invoices(
                     LightningInvoice.status == InvoiceStatus.PENDING,
                     LightningInvoice.provider_invoice_id.is_not(None),
                 )
-                .order_by(LightningInvoice.created_at, LightningInvoice.id)
+                .order_by(LightningInvoice.updated_at, LightningInvoice.id)
                 .limit(batch_size)
+                .with_for_update(skip_locked=True)
             )
         ).all()
         checked_count = len(invoices)
@@ -169,6 +177,7 @@ async def reconcile_pending_invoices(
             if invoice.provider_invoice_id is None:
                 continue
 
+            invoice.updated_at = datetime.now(timezone.utc)
             payment = await lnbits_wallet.get_payment(
                 invoice.provider_invoice_id
             )

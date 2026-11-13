@@ -95,7 +95,7 @@ def main():
             {"out": True, "bolt11": result["payment_request"]},
             simulator(),
         )
-        print("Simulated payment sent. Refresh checkout to settle.")
+        print("Simulated payment sent. Checkout settles in the background.")
     else:
         result = request(
             LNBITS,

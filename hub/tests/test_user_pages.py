@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from hub import wallet_service
 from hub.ledger_client import LedgerBalance, LedgerClientError
 from hub.models.tables import CheckoutSession
 from hub.pages import user
@@ -156,7 +157,7 @@ async def test_wallet_page_renders_unavailable_balance_when_ledger_fails(
         raise LedgerClientError('ledger unavailable')
 
     monkeypatch.setattr(
-        user,
+        wallet_service,
         'get_or_create_user_ledger_account',
         fail_account_lookup,
     )
@@ -304,58 +305,59 @@ async def test_request_deposit_invoice_rejects_invalid_amount() -> None:
 
 
 @pytest.mark.asyncio
-async def test_withdraw_wallet_balance_posts_debit_after_pls_success(
+async def test_withdrawal_timeout_reuses_persisted_reference(
+    session,
     monkeypatch,
 ) -> None:
-    user_account = UUID('00000000-0000-0000-0000-000000000001')
-    payment_reference = UUID('00000000-0000-0000-0000-000000000002')
-    hold_id = UUID('00000000-0000-0000-0000-000000000003')
-    account = SimpleNamespace(ledger_account_id=user_account)
+    user_account = UUID(int=1)
+    hold_id = UUID(int=3)
     monkeypatch.setattr(
-        user,
+        wallet_service,
         'get_or_create_user_ledger_account',
-        AsyncMock(return_value=account),
-    )
-    monkeypatch.setattr(user, 'uuid4', lambda: payment_reference)
-    ledger = SimpleNamespace(
-        get_balance=AsyncMock(
-            return_value=LedgerBalance(
-                balance_msat=100_000,
-                reserved_balance_msat=0,
-                available_balance_msat=100_000,
-            )
+        AsyncMock(
+            return_value=SimpleNamespace(ledger_account_id=user_account)
         ),
+    )
+    ledger = SimpleNamespace(
+        get_balance=AsyncMock(return_value=LedgerBalance(100_000, 0, 100_000)),
         create_hold=AsyncMock(
             return_value=SimpleNamespace(hold_id=hold_id, status='active')
         ),
+        withdrawal_status=AsyncMock(
+            side_effect=['pending', 'pending', 'paid']
+        ),
     )
-
-    async def fake_payout_requester(**kwargs):
-        assert kwargs == {
-            'user_id': 'user-123',
-            'payment_request': 'lnbc1withdraw',
-            'amount_msat': 21_000,
-            'payment_reference': str(payment_reference),
-        }
-        return {'checking_id': 'chk-1', 'payment_hash': 'hash-1'}
-
-    result = await user.withdraw_wallet_balance(
+    payout = AsyncMock(
+        side_effect=[
+            None,
+            {
+                'status': 'paid',
+                'checking_id': 'chk-1',
+                'payment_hash': 'hash-1',
+            },
+        ]
+    )
+    args = dict(
         user_sub='user-123',
         amount_sats=21,
         payment_request=' lnbc1withdraw ',
         ledger=ledger,
-        session=SimpleNamespace(),
-        payout_requester=fake_payout_requester,
+        session=session,
+        payout_requester=payout,
     )
+    assert await wallet_service.withdraw_wallet_balance(**args) is None
+    result = await wallet_service.withdraw_wallet_balance(**args)
 
-    assert result is not None
     assert result.hold_id == hold_id
-    assert result.payment_reference == payment_reference
-    payload = ledger.create_hold.await_args.args[0]
-    assert payload.account_id == user_account
-    assert payload.amount_msat == WITHDRAWAL_AMOUNT_MSAT
-    assert payload.reference_type == 'wallet_withdrawal'
-    assert payload.reference_id == payment_reference
+    assert payout.await_args_list[0] == payout.await_args_list[1]
+    assert payout.await_args.kwargs['payment_reference'] == str(
+        result.payment_reference
+    )
+    ledger.create_hold.assert_awaited_once()
+    hold = ledger.create_hold.await_args.args[0]
+    assert hold.amount_msat == WITHDRAWAL_AMOUNT_MSAT
+    assert hold.reference_id == result.payment_reference
+    assert hold.expires_at is None
 
 
 @pytest.mark.asyncio
@@ -366,7 +368,7 @@ async def test_withdraw_wallet_balance_rejects_insufficient_balance(
         ledger_account_id=UUID('00000000-0000-0000-0000-000000000010')
     )
     monkeypatch.setattr(
-        user,
+        wallet_service,
         'get_or_create_user_ledger_account',
         AsyncMock(return_value=account),
     )
@@ -388,7 +390,7 @@ async def test_withdraw_wallet_balance_rejects_insufficient_balance(
             amount_sats=21,
             payment_request='lnbc1withdraw',
             ledger=ledger,
-            session=SimpleNamespace(),
+            session=SimpleNamespace(scalar=AsyncMock(return_value=None)),
         )
 
 
@@ -446,7 +448,7 @@ async def test_load_wallet_snapshot_aggregates_ledger_and_checkout_data(
     session.scalar = fake_scalar
     session.scalars = fake_scalars
     monkeypatch.setattr(
-        user,
+        wallet_service,
         'get_or_create_user_ledger_account',
         AsyncMock(return_value=account),
     )
@@ -490,6 +492,12 @@ async def test_load_wallet_snapshot_aggregates_ledger_and_checkout_data(
         ledger=ledger,
     )
 
+    ledger.list_holds.assert_awaited_once_with(
+        account.ledger_account_id, hold_status='active'
+    )
+    ledger.get_statement.assert_awaited_once_with(
+        account.ledger_account_id, limit=10
+    )
     assert snapshot.account_id == account.ledger_account_id
     assert snapshot.available_balance_msat == AVAILABLE_BALANCE_MSAT
     assert snapshot.reserved_balance_msat == RESERVED_BALANCE_MSAT
