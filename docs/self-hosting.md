@@ -2,8 +2,21 @@
 
 Leprechaun runs on infrastructure controlled by the operator. The supplied Compose
 files are a development starting point, not a production deployment recipe.
-Real-fund operation remains blocked by the recovery and withdrawal limitations
-listed in the [README](../README.md#estado-do-projeto).
+See the [README](../README.md#estado-do-projeto) for the remaining requirements
+before operating with real funds.
+
+## Container images
+
+After the service checks pass, GitHub Actions publishes Linux AMD64 images to
+GitHub Container Registry on pushes to `main` and version tags:
+
+- `ghcr.io/sats-lottu/leprechaun-hub`
+- `ghcr.io/sats-lottu/leprechaun-ledger`
+- `ghcr.io/sats-lottu/leprechaun-pls`
+
+Each image has a `sha-<commit>` tag. Pushes to `main` also update `latest`,
+and SemVer tags produce matching image tags such as `v1.2.3`. Pin the same
+version or commit tag for all three services in a deployment.
 
 ## Configuration boundaries
 
