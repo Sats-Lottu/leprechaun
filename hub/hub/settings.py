@@ -2,6 +2,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LOCAL_OIDC_ISSUER = 'http://localhost:8080/realms/leprechaun'
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -18,10 +20,13 @@ class Settings(BaseSettings):
     HUB_STORAGE_SECRET: str = 'change-me-hub-storage-secret'
     SESSION_SECRET_KEY: str = 'change-me-session-secret'
     SESSION_HTTPS_ONLY: bool = False
-    OIDC_CLIENT_ID: str = 'hub-local-client'
+    OIDC_CLIENT_ID: str = 'leprechaun-hub'
     OIDC_CLIENT_SECRET: str | None = None
-    OIDC_SERVER_METADATA_URL: str = 'http://localhost:8080/realms/leprechaun/.well-known/openid-configuration'
-    OIDC_ISSUER: str = 'http://localhost:8080/realms/leprechaun'
+    OIDC_SERVER_METADATA_URL: str = (
+        LOCAL_OIDC_ISSUER + '/.well-known/openid-configuration'
+    )
+    OIDC_ISSUER: str = LOCAL_OIDC_ISSUER
+    OIDC_INTERNAL_BASE_URL: str = ''
     OIDC_SCOPE: str = 'openid profile'
     OIDC_REDIRECT_PATH: str = '/auth/callback'
 

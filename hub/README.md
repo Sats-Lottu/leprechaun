@@ -17,10 +17,19 @@ reservas e liquidação no Ledger e solicita invoices ao PLS via RabbitMQ.
 - `/admin/*`: demais páginas administrativas ainda incluem resumos básicos e
   espaços reservados. Não são um console financeiro completo.
 
-O login utiliza OIDC. Os papéis administrativos são mantidos no banco do Hub,
+O login utiliza OIDC com Keycloak, Authorization Code e PKCE S256. Os papéis
+administrativos são mantidos no banco do Hub,
 separadamente dos papéis do provedor de identidade. O operador pode conceder
 acesso com `python -m hub.admin_roles OIDC_SUB`; o usuário precisa entrar novamente
 para atualizar o menu. As alterações de aplicações verificam o papel no banco.
+
+Configure `OIDC_ISSUER`, `OIDC_SERVER_METADATA_URL`, `OIDC_CLIENT_ID` e,
+para clientes confidenciais, `OIDC_CLIENT_SECRET`. O cliente público usa `none`;
+com segredo, o Hub usa `client_secret_basic`. Com backchannel dinâmico, o
+Keycloak informa os endereços internos no discovery. Se o discovery anunciar
+apenas os endereços públicos e o Hub precisar da rede privada, configure
+`OIDC_INTERNAL_BASE_URL` com a URL interna completa do realm. O Hub valida
+issuer, assinatura, audience, nonce e expiração.
 
 ## API de aplicações
 

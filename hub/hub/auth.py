@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
+from authlib.integrations.starlette_client.apps import StarletteOAuth2App
 from fastapi import Request
 from nicegui import app
 from sqlalchemy import select
@@ -21,6 +22,34 @@ ADMIN_ROLE = 'admin'
 log = logging.getLogger(__name__)
 
 
+class OIDCClient(StarletteOAuth2App):
+    def __init__(
+        self, *args, issuer: str, internal_base_url: str = '', **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.issuer = issuer
+        self.internal_base_url = internal_base_url.rstrip('/')
+
+    async def load_server_metadata(self) -> dict[str, Any]:
+        metadata = dict(await super().load_server_metadata())
+        if metadata.get('issuer') != self.issuer:
+            raise OAuthError(error='invalid_issuer')
+        if self.internal_base_url:
+            public_base = self.issuer.rstrip('/') + '/'
+            for endpoint in (
+                'token_endpoint',
+                'userinfo_endpoint',
+                'jwks_uri',
+            ):
+                url = metadata.get(endpoint, '')
+                if not url.startswith(public_base):
+                    raise OAuthError(error='invalid_provider_endpoint')
+                metadata[endpoint] = (
+                    self.internal_base_url + '/' + url[len(public_base) :]
+                )
+        return metadata
+
+
 def create_oauth(settings: Settings | None = None) -> OAuth:
     settings = settings or get_settings()
     token_auth_method = (
@@ -29,6 +58,9 @@ def create_oauth(settings: Settings | None = None) -> OAuth:
     oauth = OAuth()
     oauth.register(
         name='oidc',
+        client_cls=OIDCClient,
+        issuer=settings.OIDC_ISSUER,
+        internal_base_url=settings.OIDC_INTERNAL_BASE_URL,
         server_metadata_url=settings.OIDC_SERVER_METADATA_URL,
         client_id=settings.OIDC_CLIENT_ID,
         client_secret=settings.OIDC_CLIENT_SECRET,

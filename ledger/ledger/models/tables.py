@@ -69,7 +69,7 @@ class Account(TimestampMixin):
         index=True,
     )
     # identifica quem é o "dono" dessa conta representado no domínio externo
-    # ex: owner_id=<uuid do satoidc-service>
+    # User wallets use the UUID derived by the Hub from the OIDC subject.
     owner_id: Mapped[UUID | None] = mapped_column(
         nullable=True, index=True, default=None
     )
