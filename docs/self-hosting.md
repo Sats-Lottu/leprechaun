@@ -8,15 +8,17 @@ before operating with real funds.
 ## Container images
 
 After the service checks pass, GitHub Actions publishes Linux AMD64 images to
-GitHub Container Registry on pushes to `main` and version tags:
+GitHub Container Registry on pushes to `main`, `preview/*` branches, and version
+tags:
 
 - `ghcr.io/sats-lottu/leprechaun-hub`
 - `ghcr.io/sats-lottu/leprechaun-ledger`
 - `ghcr.io/sats-lottu/leprechaun-pls`
 
-Each image has a `sha-<commit>` tag. Pushes to `main` also update `latest`,
-and SemVer tags produce matching image tags such as `v1.2.3`. Pin the same
-version or commit tag for all three services in a deployment.
+Each image has a `sha-<commit>` tag. Preview branches publish only that tag.
+Pushes to `main` also update `latest`, and SemVer tags produce matching image
+tags such as `v1.2.3`. Pin the same version or commit tag for all three services
+in a deployment.
 
 ## Configuration boundaries
 
