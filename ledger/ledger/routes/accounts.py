@@ -2,8 +2,8 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ledger.audit import AuditEvent, record_audit_event
@@ -54,25 +54,46 @@ async def list_accounts(session: Session):
     status_code=status.HTTP_201_CREATED,
     response_model=AccountCreated,
 )
-async def create_account(
+async def create_account(  # noqa: PLR0913
     session: Session,
     account_type: AccountType = AccountType.USER,
     owner_id: UUID | None = None,
     name: str | None = None,
+    reuse_existing: bool = False,
 ):
     if account_type is AccountType.USER and not owner_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='owner_id is required when account_type is provided',
         )
+    if reuse_existing and account_type is AccountType.USER and owner_id:
+        if session.bind.dialect.name == 'postgresql':
+            lock_key = int.from_bytes(owner_id.bytes[:8], 'big', signed=True)
+            await session.execute(select(func.pg_advisory_xact_lock(lock_key)))
+        existing = await session.scalar(
+            select(Account)
+            .where(
+                Account.owner_id == owner_id,
+                Account.account_type == AccountType.USER,
+                Account.is_active.is_(True),
+            )
+            .order_by(Account.created_at, Account.id)
+            .limit(1)
+        )
+        if existing is not None:
+            return AccountCreated(
+                account_id=existing.id,
+                account_type=existing.account_type,
+                owner_id=existing.owner_id,
+                name=existing.name,
+            )
     account = Account(
         account_type=account_type,
         owner_id=owner_id,
         name=name,
     )
     session.add(account)
-    await session.commit()
-    await session.refresh(account)
+    await session.flush()
     record_audit_event(
         session,
         AuditEvent(
@@ -119,10 +140,21 @@ async def get_account_balance(account_id: UUID, session: Session):
 
 
 @router.get('/{account_id}/statement', response_model=AccountStatement)
-async def get_account_statement(account_id: UUID, session: Session):
-    entries = await session.scalars(
-        select(LedgerEntry).where(LedgerEntry.account_id == account_id)
+async def get_account_statement(
+    account_id: UUID,
+    session: Session,
+    limit: Annotated[int | None, Query(ge=1, le=100)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    query = (
+        select(LedgerEntry)
+        .where(LedgerEntry.account_id == account_id)
+        .order_by(LedgerEntry.created_at.desc(), LedgerEntry.id.desc())
+        .offset(offset)
     )
+    if limit is not None:
+        query = query.limit(limit)
+    entries = await session.scalars(query)
     return AccountStatement(
         entries=[
             TransactionEntryDetails.model_validate(

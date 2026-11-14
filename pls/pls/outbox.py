@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -43,7 +44,10 @@ async def publish_outbox_event(
 ) -> None:
     try:
         await broker.publish(
-            event.payload, queue=settings.PAYMENT_EVENTS_QUEUE
+            event.payload,
+            queue=settings.PAYMENT_EVENTS_QUEUE,
+            persist=True,
+            timeout=5,
         )
     except Exception as exc:
         event.attempts += 1
@@ -77,8 +81,13 @@ async def publish_pending_outbox(
             await session.scalars(
                 select(OutboxEvent)
                 .where(OutboxEvent.status == OutboxStatus.PENDING)
-                .order_by(OutboxEvent.created_at, OutboxEvent.id)
+                .order_by(
+                    OutboxEvent.attempts,
+                    OutboxEvent.created_at,
+                    OutboxEvent.id,
+                )
                 .limit(batch_size)
+                .with_for_update(skip_locked=True)
             )
         ).all()
         log.info(
@@ -105,6 +114,15 @@ async def publish_pending_outbox(
 
     log.info("outbox_publish_batch_completed published_count=%s", published)
     return published
+
+
+async def drain_outbox() -> None:
+    while True:
+        try:
+            await publish_pending_outbox()
+        except Exception:
+            log.exception('outbox_drain_failed')
+        await asyncio.sleep(2)
 
 
 __all__ = [

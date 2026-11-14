@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -66,7 +68,9 @@ class LedgerHoldCreate:
 
 
 class LedgerClientError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = '') -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,20 @@ class LedgerTransactionCreate:
     external_origin: str = ''
 
 
+_shared_http_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def ledger_http_lifespan() -> AsyncIterator[None]:
+    global _shared_http_client  # noqa: PLW0603
+    async with httpx.AsyncClient() as client:
+        _shared_http_client = client
+        try:
+            yield
+        finally:
+            _shared_http_client = None
+
+
 class LedgerClient:
     def __init__(
         self,
@@ -126,6 +144,7 @@ class LedgerClient:
             'account_type': 'user',
             'owner_id': str(ledger_owner_id(user_sub)),
             'name': user_sub,
+            'reuse_existing': 'true',
         }
         data = await self._request(
             'POST',
@@ -185,8 +204,21 @@ class LedgerClient:
         data = await self._request('GET', f'/holds/{hold_id}')
         return _to_hold_details(data)
 
-    async def list_holds(self, account_id: UUID) -> list[LedgerHoldDetails]:
-        data = await self._request('GET', f'/holds/account/{account_id}')
+    async def checkout_hold(
+        self, checkout_id: UUID
+    ) -> LedgerHoldDetails | None:
+        data = await self._request('GET', f'/holds/checkout/{checkout_id}')
+        return _to_hold_details(data) if data else None
+
+    async def list_holds(
+        self, account_id: UUID, *, hold_status: str | None = None
+    ) -> list[LedgerHoldDetails]:
+        params = {'hold_status': hold_status} if hold_status else {}
+        data = await self._request(
+            'GET',
+            f'/holds/account/{account_id}',
+            **({'params': params} if params else {}),
+        )
         return [_to_hold_details(item) for item in data.get('holds', [])]
 
     async def release_hold(
@@ -209,9 +241,16 @@ class LedgerClient:
         )
 
     async def get_statement(
-        self, account_id: UUID
+        self, account_id: UUID, *, limit: int | None = None, offset: int = 0
     ) -> list[LedgerStatementEntry]:
-        data = await self._request('GET', f'/accounts/{account_id}/statement')
+        params = {'offset': offset} if offset else {}
+        if limit is not None:
+            params['limit'] = limit
+        data = await self._request(
+            'GET',
+            f'/accounts/{account_id}/statement',
+            **({'params': params} if params else {}),
+        )
         return [
             LedgerStatementEntry(
                 account_id=UUID(str(item['account_id'])),
@@ -308,20 +347,63 @@ class LedgerClient:
         if self.token:
             headers['X-Internal-Service-Token'] = self.token
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self.timeout,
-        ) as client:
-            response = await client.request(
-                method,
-                path,
-                headers=headers,
-                **kwargs,
-            )
+        try:
+            if _shared_http_client is not None:
+                response = await _shared_http_client.request(
+                    method,
+                    f'{self.base_url}{path}',
+                    headers=headers,
+                    timeout=self.timeout,
+                    **kwargs,
+                )
+            else:
+                async with httpx.AsyncClient(
+                    base_url=self.base_url,
+                    timeout=self.timeout,
+                ) as client:
+                    response = await client.request(
+                        method,
+                        path,
+                        headers=headers,
+                        **kwargs,
+                    )
+        except httpx.RequestError as exc:
+            raise LedgerClientError(str(exc)) from exc
 
         if response.status_code >= HTTP_ERROR_MIN_STATUS:
-            raise LedgerClientError(response.text)
+            code = ''
+            try:
+                detail = response.json().get('detail')
+                if isinstance(detail, dict):
+                    code = detail.get('code', '')
+            except (ValueError, AttributeError):
+                pass
+            raise LedgerClientError(response.text, code=code)
         return response.json()
+
+    async def settle_checkout(
+        self, checkout_id: UUID, payload: dict
+    ) -> LedgerTransactionCreated:
+        data = await self._request(
+            'POST',
+            f'/transactions/checkout/{checkout_id}/settle',
+            json=payload,
+        )
+        return LedgerTransactionCreated(
+            transaction_id=UUID(str(data['transaction_id'])),
+            status=str(data['status']),
+        )
+
+    async def checkout_settlement(self, checkout_id: UUID) -> dict:
+        return await self._request(
+            'GET', f'/transactions/checkout/{checkout_id}/settlement'
+        )
+
+    async def withdrawal_status(self, reference: UUID) -> str:
+        data = await self._request(
+            'GET', f'/transactions/withdrawal/{reference}/status'
+        )
+        return data['status']
 
 
 def _optional_datetime(value: object) -> datetime | None:

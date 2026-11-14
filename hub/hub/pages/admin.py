@@ -19,22 +19,26 @@ router = APIRouter(prefix='/admin')
 def _require_admin() -> bool:
     if current_user_sub() is None:
         ui.label('Login is required to access admin.').classes(
-            'text-white/70 text-base'
+            'text-zinc-300 text-base'
         )
         ui.button(
             'Login',
             icon='login',
             on_click=lambda: ui.navigate.to('/auth/login'),
-        ).classes('w-full sm:w-auto')
+        ).props('unelevated no-caps color=primary').classes(
+            'w-full sm:w-auto font-medium'
+        )
         return False
 
     if not is_admin():
-        ui.label('Admin role is required.').classes('text-[#ff5c5c] text-base')
+        ui.label('Admin role is required.').classes(
+            'text-rose-400 text-base font-medium'
+        )
         ui.button(
             'Go to wallet',
             icon='account_balance_wallet',
             on_click=lambda: ui.navigate.to('/'),
-        ).props('outline').classes('w-full sm:w-auto')
+        ).props('outline no-caps').classes('w-full sm:w-auto')
         return False
 
     return True
@@ -127,8 +131,8 @@ async def _admin_page(title: str, active_path: str, description: str) -> None:
         if not _require_admin():
             return
 
-        with ui.card().classes(f'w-full {CARD_CLASS}'):
-            ui.label(description).classes('text-white/80')
+        with ui.card().classes(f'w-full {CARD_CLASS} gap-4'):
+            ui.label(description).classes(f'text-sm {MUTED_TEXT_CLASS}')
             await _admin_data(title)
 
 
@@ -192,7 +196,7 @@ async def _admin_data(title: str) -> None:
         )
 
     ui.label(summary or 'No checkout sessions yet.').classes(
-        f'text-sm {MUTED_TEXT_CLASS}'
+        f'text-xs font-mono {MUTED_TEXT_CLASS}'
     )
     _table(
         rows,
@@ -218,8 +222,10 @@ def _table(rows: list[dict], columns: list[dict]) -> None:
             f'text-sm {MUTED_TEXT_CLASS}'
         )
         return
-    ui.table(columns=columns, rows=rows).classes('w-full').props('flat dense')
+    ui.table(columns=columns, rows=rows).classes('w-full').props(
+        'flat bordered dense dark'
+    )
 
 
 def _format_msat(amount_msat: int) -> str:
-    return f'{amount_msat // 1000} sats'
+    return f'{amount_msat // 1000:,} sats'

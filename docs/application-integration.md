@@ -5,8 +5,9 @@ checkout do Leprechaun. Abrir o checkout nao reserva nem debita saldo: o usuario
 precisa clicar em **Confirm payment**. O saldo disponivel e utilizado primeiro;
 uma invoice Lightning cobre a diferenca quando necessario.
 
-Enquanto o checkout autenticado estiver aberto, ele verifica o pagamento a cada
-3 segundos. Apos a liquidacao (`settled`), redireciona automaticamente para a
+O Hub conclui o pagamento confirmado pelo usuário mesmo com a aba fechada.
+Enquanto o checkout autenticado estiver aberto, a página consulta o estado a
+cada 3 segundos. Após a liquidação (`settled`), redireciona automaticamente para a
 `return_url` cadastrada na cobranca, preservando seus parametros. Cobrancas
 pendentes, canceladas, expiradas ou com falha nao acionam esse retorno.
 

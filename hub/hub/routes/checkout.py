@@ -25,7 +25,6 @@ from hub.checkout_service import (
     CheckoutSessionStateError,
     CheckoutSettlementError,
     cancel_checkout_payment,
-    expire_if_due,
     prepare_checkout_payment,
     settle_checkout_payment,
 )
@@ -213,9 +212,6 @@ async def get_checkout_session(
         CheckoutSessionTable.id == session_id,
         CheckoutSessionTable.application_id == application.id,
     )
-    if expire_if_due(checkout_session):
-        await session.commit()
-        await session.refresh(checkout_session)
     return _to_domain(checkout_session).to_response()
 
 
@@ -232,9 +228,6 @@ async def get_checkout_order(
         CheckoutSessionTable.order_id == order_id,
         CheckoutSessionTable.application_id == application.id,
     )
-    if expire_if_due(checkout_session):
-        await session.commit()
-        await session.refresh(checkout_session)
     return _to_domain(checkout_session).to_response()
 
 
@@ -259,6 +252,11 @@ async def prepare_checkout_session(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f'Checkout session is {exc.status}',
+        ) from exc
+    except LedgerClientError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Could not prepare checkout in ledger',
         ) from exc
 
     return _to_domain(preparation.session).to_response()

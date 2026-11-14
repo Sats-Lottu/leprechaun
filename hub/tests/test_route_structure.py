@@ -7,6 +7,8 @@ def test_user_routes_are_grouped_under_user_prefix() -> None:
 
     assert paths == {
         '/user/wallet',
+        '/user/deposit',
+        '/user/withdraw',
         '/user/checkout',
         '/user/profile',
     }

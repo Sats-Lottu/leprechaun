@@ -142,6 +142,7 @@ class Failed(BaseModel):
     model_config = ConfigDict(extra="ignore")
     detail: str
     status: str = "failed"
+    http_status: int | None = Field(default=None, exclude=True)
 
 
 class Token(BaseModel):
@@ -170,6 +171,7 @@ class Payment(BaseModel):
     amount: int | None = None
     paid: bool | None = None
     pending: bool | None = None
+    status: str | None = Field(default=None, exclude=True)
     details: Any | None = None
 
     @property

@@ -167,7 +167,7 @@ payment.invoice.pay
 payment.lnurl.pay
 ```
 
-Quando o LNbits aceita o pagamento, o PLS publica:
+Quando o LNbits confirma que o saque do Hub foi pago, o PLS publica:
 
 ```text
 payment.sent
@@ -186,9 +186,21 @@ Payload:
 }
 ```
 
-Para retiradas iniciadas pelo Hub, o Ledger localiza a reserva pela
-`payment_reference`, consome o hold e registra um `external_debit` com
-`origin=lightning`. O PLS apenas ecoa essa referencia opaca.
+O Hub registra a retirada antes de reservar o saldo e reutiliza a
+`payment_reference` após timeout. O PLS confere o valor da BOLT11, registra a
+referência antes de chamar o LNbits e consulta o provedor para resolver
+respostas pendentes ou perdidas. O Ledger consome a reserva ao receber
+`payment.sent` e registra um `external_debit` com `origin=lightning`. O Hub
+libera a reserva se o provedor confirmar que o saque falhou.
+
+## Checkout
+
+Após a confirmação do usuário, o Hub retoma a cobrança em segundo plano. O
+Ledger verifica se a invoice da cobrança foi creditada na conta do comprador,
+confere o valor e vincula esse crédito a uma única liquidação. A transferência,
+o consumo da reserva e o vínculo com a invoice são gravados juntos. A cobrança
+mista aguarda até cinco minutos após o vencimento para receber a confirmação de
+um pagamento feito dentro do prazo. Um pagamento tardio fica no saldo do usuário.
 
 ## Falhas
 
@@ -215,6 +227,12 @@ Payload:
 
 ## Ativacao do consumidor
 
+A fila de eventos agora é durável. Para atualizar uma instalação que usa a
+fila antiga, interrompa a publicação, aguarde o Ledger consumir as mensagens
+pendentes e configure um novo nome em `PAYMENT_EVENTS_QUEUE` para Ledger e PLS
+antes de reiniciar os serviços atualizados. RabbitMQ não permite mudar a
+durabilidade de uma fila existente.
+
 Antes de ligar o consumidor do ledger em ambiente real:
 
 1. criar a conta do usuario com `owner_id` igual ao `user_id` enviado ao PLS;
@@ -229,7 +247,8 @@ PAYMENT_EVENT_CONSUMER_ENABLED=true
 Garantias implementadas:
 
 - idempotencia persistente no PLS para comandos;
-- outbox transacional no PLS para eventos;
+- outbox transacional no PLS para eventos, com publicação periódica mesmo sem
+  novos comandos ou confirmações;
 - idempotencia no ledger para `payment.invoice.paid`;
 - reconciliacao do PLS com LNbits via WebSocket e job periodico.
 

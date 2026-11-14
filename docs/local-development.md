@@ -86,8 +86,8 @@ PowerShell: `$env:LEPRECHAUN_API_KEY = 'CHAVE_EXIBIDA'`.
 python local-bootstrap/local-demo.py pay-checkout SESSION_ID
 ```
 
-5. Mantenha o checkout aberto: ele verifica o pagamento e retorna a URL
-   configurada depois da liquidacao (`settled`).
+5. O Hub liquida a compra em segundo plano. Com o checkout aberto, a página
+   retorna à URL configurada depois da liquidação (`settled`).
    Se a sessao OIDC expirou, entre novamente e abra o mesmo checkout.
 6. Abra a wallet para verificar o extrato.
 
@@ -137,14 +137,10 @@ antigos; `python -m pytest` evita esses launchers.
 
 ## Limites atuais
 
-O ambiente local valida a integracao, mas nao representa prontidao de producao.
-Antes de usar fundos reais ainda e necessario concluir a recuperacao duravel de
-timeout e falhas no saque, a recuperacao entre liquidacoes parciais e os testes
-de concorrencia e redelivery. O saque reserva saldo antes de chamar o PLS e o
-Ledger consome a reserva ao receber `payment.sent`, mas interrupcoes entre esses
-passos ainda precisam de tratamento operacional.
-As confirmacoes externas e a reconciliacao contabil precisam continuar sendo
-as fontes de verificacao.
+O ambiente local usa fundos simulados. Antes de usar fundos reais, valide
+concorrência, reentrega de eventos e interrupções de serviços no ambiente de
+implantação. Use as confirmações externas e a reconciliação contábil para
+verificar os resultados.
 
 Referencias de configuracao:
 [Hostname e backchannel do Keycloak](https://www.keycloak.org/server/hostname) e

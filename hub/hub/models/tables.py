@@ -89,6 +89,35 @@ class UserLedgerAccount(TimestampMixin):
 
 
 @table_registry.mapped_as_dataclass
+class WalletWithdrawal(TimestampMixin):
+    __tablename__ = 'wallet_withdrawals'
+    __table_args__ = (
+        UniqueConstraint(
+            'user_sub',
+            'invoice_digest',
+            name='uq_wallet_withdrawals_user_invoice',
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        init=False,
+        primary_key=True,
+        default_factory=uuid4,
+    )
+    user_sub: Mapped[str] = mapped_column(String(255))
+    invoice_digest: Mapped[str] = mapped_column(String(64))
+    payment_request: Mapped[str] = mapped_column(String(4096))
+    amount_msat: Mapped[int] = mapped_column()
+    account_id: Mapped[UUID] = mapped_column()
+    hold_id: Mapped[UUID | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(
+        String(20), index=True, default='pending'
+    )
+    payment_hash: Mapped[str] = mapped_column(String(160), default='')
+    checking_id: Mapped[str] = mapped_column(String(160), default='')
+
+
+@table_registry.mapped_as_dataclass
 class ConnectedApplication(TimestampMixin):
     __tablename__ = 'connected_applications'
 

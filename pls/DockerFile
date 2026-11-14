@@ -1,12 +1,16 @@
 FROM python:3.11-alpine
-ENV POETRY_VIRTUALENVS_CREATE=false
 WORKDIR /app
+
+RUN python -m venv /opt/poetry \
+    && /opt/poetry/bin/pip install --no-cache-dir poetry==2.4.3 \
+    && python -m venv /opt/leprechaun
+ENV VIRTUAL_ENV=/opt/leprechaun
+ENV PATH="/opt/leprechaun/bin:/opt/poetry/bin:${PATH}"
+
+COPY pls/pyproject.toml pls/poetry.lock ./
+RUN poetry install --no-root --no-interaction --no-ansi --without dev
 
 COPY pls/ .
 
-RUN pip install poetry
-
-RUN poetry config installer.max-workers 10
-RUN poetry install --no-root --no-interaction --no-ansi --without dev
-
-CMD ["python", "-m", "pls.main"]
+EXPOSE 8001
+CMD ["sh", "/app/entrypoint.sh"]

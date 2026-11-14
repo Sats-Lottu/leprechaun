@@ -1,6 +1,6 @@
 import logging
 
-from faststream.rabbit import RabbitBroker
+from faststream.rabbit import Channel, RabbitBroker
 
 from pls.schemas import Envelope
 from pls.settings import get_settings
@@ -8,7 +8,9 @@ from pls.settings import get_settings
 settings = get_settings()
 log = logging.getLogger(settings.SERVICE_NAME)
 
-broker = RabbitBroker(settings.RABBITMQ_URL)
+broker = RabbitBroker(
+    settings.RABBITMQ_URL, default_channel=Channel(on_return_raises=True)
+)
 ws_publisher = broker.publisher(settings.PAYMENT_EVENTS_QUEUE)
 
 

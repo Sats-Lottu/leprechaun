@@ -50,7 +50,7 @@ class FakeBroker:
     def __init__(self) -> None:
         self.published = []
 
-    async def publish(self, body, queue):
+    async def publish(self, body, queue, **_kwargs):
         self.published.append((body, queue))
 
 

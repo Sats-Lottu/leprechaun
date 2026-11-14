@@ -60,7 +60,7 @@ def failed_from_response(resp: httpx.Response, default_detail: str) -> Failed:
                 detail=json.dumps(data, ensure_ascii=False), status="failed"
             )
         return Failed(detail=str(data), status="failed")
-    except ValidationError:
+    except (ValidationError, ValueError):
         return Failed(detail=(resp.text or default_detail), status="failed")
 
 
@@ -147,6 +147,7 @@ class CallSpec:
     json_body: dict[str, Any] | None = None
     ok: set[int] = field(default_factory=lambda: {HTTPStatus.OK})
     default_error: str = "Request failed"
+    include_error_status: bool = False
 
 
 # =========================
@@ -214,6 +215,8 @@ class LNbitsWallet:
                 result = failed_from_response(
                     resp, f"{spec.default_error} ({resp.status_code})"
                 )
+                if spec.include_error_status:
+                    result.http_status = resp.status_code
             else:
                 try:
                     data = resp.json()
@@ -321,17 +324,22 @@ class LNbitsWallet:
         )
 
     async def pay_invoice(
-        self, bolt11: str, out: bool = True
+        self, bolt11: str, out: bool = True, *, reference: str | None = None
     ) -> Payment | Failed:
+        body = {'out': out, 'bolt11': bolt11}
+        if reference:
+            body['external_id'] = reference
+            body['extra'] = {'leprechaun_withdrawal': reference}
         outp = await self._call(
             CallSpec(
                 method="POST",
                 path="/api/v1/payments",
                 headers=self.headers_admin,
-                json_body={"out": out, "bolt11": bolt11},
+                json_body=body,
                 ok={HTTPStatus.OK, HTTPStatus.CREATED},
                 model=Payment,
                 default_error="pay_invoice failed",
+                include_error_status=reference is not None,
             )
         )
         return (
@@ -340,7 +348,9 @@ class LNbitsWallet:
             else Failed(detail="Unexpected response!", status="failed")
         )
 
-    async def get_payment(self, checking_id: str) -> Payment | Failed:
+    async def get_payment(
+        self, checking_id: str, *, include_error_status: bool = False
+    ) -> Payment | Failed:
         out = await self._call(
             CallSpec(
                 method="GET",
@@ -349,6 +359,7 @@ class LNbitsWallet:
                 ok={HTTPStatus.OK},
                 model=Payment,
                 default_error="get_payment failed",
+                include_error_status=include_error_status,
             )
         )
         return (
@@ -357,7 +368,9 @@ class LNbitsWallet:
             else Failed(detail="Unexpected response!", status="failed")
         )
 
-    async def decode_invoice(self, invoice: str) -> PaymentDecoded | Failed:
+    async def decode_invoice(
+        self, invoice: str, *, include_error_status: bool = False
+    ) -> PaymentDecoded | Failed:
         out = await self._call(
             CallSpec(
                 method="POST",
@@ -367,6 +380,7 @@ class LNbitsWallet:
                 ok={HTTPStatus.OK},
                 model=PaymentDecoded,
                 default_error="decode_invoice failed",
+                include_error_status=include_error_status,
             )
         )
         return (
@@ -451,11 +465,7 @@ class LNbitsClient:
             )
 
         wallet = next(
-            (
-                item
-                for item in info.wallets
-                if item.id == self.cfg.wallet_id
-            ),
+            (item for item in info.wallets if item.id == self.cfg.wallet_id),
             None,
         )
         if not self.cfg.wallet_id and len(info.wallets) == 1:
