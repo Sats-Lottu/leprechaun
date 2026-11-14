@@ -25,12 +25,19 @@ class FakeElement:
     def __init__(self, value=None) -> None:
         self.value = value
         self.text = value
+        self.opened = False
 
     def __enter__(self) -> 'FakeElement':
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         return None
+
+    def open(self) -> None:
+        self.opened = True
+
+    def close(self) -> None:
+        self.opened = False
 
     def classes(self, value: str) -> 'FakeElement':
         self.classes_value = value
@@ -68,6 +75,10 @@ class FakeUi:
         self.links: list[str] = []
         self.notifications: list[dict] = []
         self.navigation: list[str] = []
+        self.timers: list[tuple[float, object]] = []
+        self.dialogs: list[FakeElement] = []
+        self.copied: list[str] = []
+        self.clipboard = SimpleNamespace(write=self.copied.append)
         self.navigate = SimpleNamespace(to=self.navigation.append)
         self.context = SimpleNamespace(
             client=SimpleNamespace(request=SimpleNamespace(query_params={}))
@@ -98,6 +109,15 @@ class FakeUi:
 
     def notify(self, message: str, *, type: str) -> None:
         self.notifications.append({'message': message, 'type': type})
+
+    def timer(self, interval: float, callback) -> SimpleNamespace:
+        self.timers.append((interval, callback))
+        return SimpleNamespace(cancel=lambda: None)
+
+    def dialog(self) -> FakeElement:
+        element = FakeElement()
+        self.dialogs.append(element)
+        return element
 
     @staticmethod
     def card() -> FakeElement:
@@ -168,17 +188,187 @@ async def test_wallet_page_renders_unavailable_balance_when_ledger_fails(
         fake_ui.notifications
     )
     assert 'Available Balance' in fake_ui.labels
-    assert 'User identity' in fake_ui.labels
-    assert 'Alice' in fake_ui.labels
-    assert 'alice@example.com' in fake_ui.labels
-    assert 'Wallet account' in fake_ui.labels
+    assert 'Pending Holds' in fake_ui.labels
+    assert 'Total Balance' in fake_ui.labels
+    assert 'Deposit via Lightning' not in fake_ui.labels
+    assert 'Withdraw via Lightning' not in fake_ui.labels
     assert 'Unavailable' in fake_ui.labels
+    assert {'Deposit', 'Withdraw'}.issubset(fake_ui.buttons)
+    assert 'Refresh Wallet' not in fake_ui.buttons
+    assert 'Ledger connected' not in fake_ui.labels
+    fake_ui.callbacks['Deposit']()
+    fake_ui.callbacks['Withdraw']()
+    assert fake_ui.navigation == ['/user/deposit', '/user/withdraw']
+
+
+@pytest.mark.asyncio
+async def test_deposit_page_renders_method_selector_and_invoice_panel(
+    monkeypatch,
+) -> None:
+    fake_ui = FakeUi()
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'app_layout', fake_app_layout)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(
+        user,
+        'load_wallet_snapshot',
+        AsyncMock(side_effect=LedgerClientError('ledger unavailable')),
+    )
+
+    await user.deposit_page()
+
+    assert 'Choose deposit method' in fake_ui.labels
+    assert 'Deposit via Lightning' in fake_ui.labels
     assert {
-        'Sync Ledger Account',
-        'Refresh Wallet',
+        'Back to wallet',
+        'Lightning',
         'Create Lightning Invoice',
+    }.issubset(fake_ui.buttons)
+
+
+@pytest.mark.asyncio
+async def test_withdraw_page_renders_method_selector_and_withdraw_panel(
+    monkeypatch,
+) -> None:
+    fake_ui = FakeUi()
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'app_layout', fake_app_layout)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(
+        user,
+        'load_wallet_snapshot',
+        AsyncMock(side_effect=LedgerClientError('ledger unavailable')),
+    )
+
+    await user.withdraw_page()
+
+    assert 'Choose withdrawal method' in fake_ui.labels
+    assert 'Withdraw via Lightning' in fake_ui.labels
+    assert {
+        'Back to wallet',
+        'Lightning',
         'Send Lightning Withdrawal',
     }.issubset(fake_ui.buttons)
+
+
+@pytest.mark.asyncio
+async def test_deposit_opens_qr_modal_and_redirects_after_confirmation(
+    monkeypatch,
+) -> None:
+    @asynccontextmanager
+    async def scope():
+        yield SimpleNamespace()
+
+    initial_snapshot = wallet_service.WalletSnapshot(
+        account_id=UUID(int=1),
+        available_balance_msat=0,
+        reserved_balance_msat=0,
+        total_balance_msat=0,
+        open_invoice_count=0,
+        active_holds=(),
+        statement_entries=(),
+        recent_checkouts=(),
+    )
+    confirmed_snapshot = wallet_service.WalletSnapshot(
+        account_id=UUID(int=1),
+        available_balance_msat=200_000,
+        reserved_balance_msat=0,
+        total_balance_msat=200_000,
+        open_invoice_count=0,
+        active_holds=(),
+        statement_entries=(),
+        recent_checkouts=(),
+    )
+    fake_ui = FakeUi()
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'app_layout', fake_app_layout)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(user, 'session_scope', scope)
+    monkeypatch.setattr(
+        user,
+        'load_wallet_snapshot',
+        AsyncMock(side_effect=[initial_snapshot, confirmed_snapshot]),
+    )
+    monkeypatch.setattr(
+        user,
+        'request_deposit_invoice',
+        AsyncMock(
+            return_value={
+                'invoice_id': 'inv-1',
+                'payment_request': 'lnbc1deposit',
+                'expires_at': '',
+            }
+        ),
+    )
+
+    await user.deposit_page()
+    await fake_ui.callbacks['Create Lightning Invoice']()
+
+    assert len(fake_ui.dialogs) == 1
+    assert fake_ui.dialogs[0].opened is True
+    assert 'lightning:lnbc1deposit' in fake_ui.links
+    assert 'Show QR Code' in fake_ui.buttons
+
+    await fake_ui.timers[0][1]()
+
+    assert fake_ui.dialogs[0].opened is False
+    assert {'message': 'Lightning deposit confirmed!', 'type': 'positive'} in (
+        fake_ui.notifications
+    )
+    assert fake_ui.navigation == ['/']
+
+
+@pytest.mark.asyncio
+async def test_withdraw_notifies_and_redirects_to_wallet_on_success(
+    monkeypatch,
+) -> None:
+    @asynccontextmanager
+    async def scope():
+        yield SimpleNamespace()
+
+    snapshot = wallet_service.WalletSnapshot(
+        account_id=UUID(int=1),
+        available_balance_msat=200_000,
+        reserved_balance_msat=0,
+        total_balance_msat=200_000,
+        open_invoice_count=0,
+        active_holds=(),
+        statement_entries=(),
+        recent_checkouts=(),
+    )
+    fake_ui = FakeUi()
+    monkeypatch.setattr(user, 'ui', fake_ui)
+    monkeypatch.setattr(user, 'app_layout', fake_app_layout)
+    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
+    monkeypatch.setattr(user, 'session_scope', scope)
+    monkeypatch.setattr(
+        user,
+        'load_wallet_snapshot',
+        AsyncMock(return_value=snapshot),
+    )
+    monkeypatch.setattr(
+        user,
+        'withdraw_wallet_balance',
+        AsyncMock(
+            return_value=SimpleNamespace(
+                hold_id=UUID(int=3),
+                payment_reference=UUID(int=4),
+                amount_msat=100_000,
+                payment_hash='hash-1',
+                checking_id='chk-1',
+                account_id=UUID(int=1),
+            )
+        ),
+    )
+
+    await user.withdraw_page()
+    await fake_ui.callbacks['Send Lightning Withdrawal']()
+
+    assert {
+        'message': 'Lightning withdrawal completed.',
+        'type': 'positive',
+    } in fake_ui.notifications
+    assert fake_ui.navigation == ['/']
 
 
 @pytest.mark.asyncio
@@ -237,31 +427,10 @@ async def test_checkout_page_renders_anonymous_checkout_session(
 async def test_profile_page_renders_authenticated_user(monkeypatch) -> None:
     fake_ui = FakeUi()
     monkeypatch.setattr(user, 'ui', fake_ui)
-    monkeypatch.setattr(user, 'app_layout', fake_app_layout)
-    monkeypatch.setattr(user, 'current_user_sub', lambda: 'user-123')
-    monkeypatch.setattr(
-        user,
-        'current_user',
-        lambda: {
-            'sub': 'user-123',
-            'name': 'Alice',
-            'preferred_username': 'alice',
-            'email': 'alice@example.com',
-        },
-    )
-    monkeypatch.setattr(user, 'current_roles', lambda: {'admin'})
-    monkeypatch.setattr(
-        user,
-        'load_wallet_snapshot',
-        AsyncMock(side_effect=LedgerClientError('ledger unavailable')),
-    )
 
     await user.profile_page()
 
-    assert 'User identity' in fake_ui.labels
-    assert 'Alice' in fake_ui.labels
-    assert 'user-123' in fake_ui.labels
-    assert 'Detailed history' in fake_ui.labels
+    assert fake_ui.navigation == [user.keycloak_account_url()]
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,15 @@ from uuid import UUID, uuid4
 from nicegui import ui
 
 from hub.auth import current_user_sub
-from hub.layout import CARD_CLASS, MUTED_TEXT_CLASS, PANEL_TITLE_CLASS
+from hub.layout import (
+    CARD_CLASS,
+    MUTED_TEXT_CLASS,
+    PANEL_TITLE_CLASS,
+    SECTION_LABEL_CLASS,
+    SUBTLE_CARD_CLASS,
+    VALUE_TEXT_CLASS,
+    status_badge_classes,
+)
 from hub.ledger_client import (
     LedgerAccountDetails,
     LedgerClient,
@@ -32,14 +40,27 @@ async def render_admin_balances() -> None:
         accounts = await ledger.list_accounts()
     except LedgerClientError:
         ui.notify('Ledger is unavailable.', type='negative')
-        ui.label('Could not load Ledger accounts.').classes(
-            f'text-sm {MUTED_TEXT_CLASS}'
-        )
+        with ui.row().classes('w-full items-center gap-3'):
+            ui.label('Ledger unavailable').classes(
+                status_badge_classes('failed')
+            )
+            ui.label('Could not load Ledger accounts.').classes(
+                f'text-sm {MUTED_TEXT_CLASS}'
+            )
         return
 
+    with ui.row().classes('w-full items-center justify-between gap-3'):
+        ui.label('Ledger connected').classes(status_badge_classes('active'))
     _balance_summary(accounts)
-    _accounts_table(accounts)
-    _operation_panel(accounts, ledger)
+    with ui.grid().classes(
+        'w-full grid-cols-1 lg:grid-cols-3 gap-6 items-start'
+    ):
+        with ui.column().classes('w-full min-w-0 lg:col-span-2 gap-4'):
+            _accounts_table(accounts)
+        with ui.column().classes(
+            'w-full min-w-0 lg:col-span-1 lg:sticky lg:top-24'
+        ):
+            _operation_panel(accounts, ledger)
 
 
 async def adjust_account_balance(  # noqa: PLR0913
@@ -135,12 +156,13 @@ async def reserve_account_balance(  # noqa: PLR0913
 def _balance_summary(accounts: list[LedgerAccountDetails]) -> None:
     total_balance = sum(account.balance_msat for account in accounts)
     total_reserved = sum(account.reserved_balance_msat for account in accounts)
-    with ui.grid(columns=1).classes('w-full gap-4 md:grid-cols-3'):
+    with ui.grid().classes('w-full grid-cols-1 gap-4 md:grid-cols-3'):
         _summary_tile('Accounts', str(len(accounts)), 'Ledger accounts')
         _summary_tile(
             'Total Balance',
             _format_msat(total_balance),
             'Across all accounts',
+            highlight=True,
         )
         _summary_tile(
             'Blocked Balance',
@@ -149,10 +171,17 @@ def _balance_summary(accounts: list[LedgerAccountDetails]) -> None:
         )
 
 
-def _summary_tile(label: str, value: str, helper: str) -> None:
-    with ui.card().classes(f'w-full {CARD_CLASS}'):
-        ui.label(label).classes(f'text-sm {MUTED_TEXT_CLASS}')
-        ui.label(value).classes('text-2xl font-bold text-[#f5b400]')
+def _summary_tile(
+    label: str,
+    value: str,
+    helper: str,
+    *,
+    highlight: bool = False,
+) -> None:
+    accent = 'border-amber-500/30' if highlight else ''
+    with ui.card().classes(f'w-full {CARD_CLASS} {accent} gap-1.5'):
+        ui.label(label).classes(SECTION_LABEL_CLASS)
+        ui.label(value).classes(f'text-2xl sm:text-3xl {VALUE_TEXT_CLASS}')
         ui.label(helper).classes(f'text-xs {MUTED_TEXT_CLASS}')
 
 
@@ -189,7 +218,7 @@ def _accounts_table(accounts: list[LedgerAccountDetails]) -> None:
             rows=rows,
             row_key='id',
             pagination=10,
-        ).classes('w-full').props('flat bordered wrap-cells')
+        ).classes('w-full').props('flat bordered wrap-cells dark dense')
 
 
 def _operation_panel(
@@ -207,55 +236,81 @@ def _operation_panel(
             'hold and reduces only the available balance.'
         ).classes(f'text-sm {MUTED_TEXT_CLASS}')
 
-        account_input = ui.select(
-            options,
-            label='Ledger account',
-            with_input=True,
-            clearable=True,
-        ).props('outlined dense options-dense').classes('w-full')
-        with ui.grid(columns=1).classes('w-full gap-4 md:grid-cols-3'):
-            operation_input = ui.select(
-                {
-                    'credit': 'Add balance',
-                    'debit': 'Remove balance',
-                    'hold': 'Reserve / block balance',
-                },
-                value='credit',
-                label='Operation',
-            ).props('outlined dense').classes('w-full')
-            amount_input = ui.number(
-                'Amount (sats)',
-                min=1,
-                step=1,
-                precision=0,
-            ).props('outlined dense').classes('w-full')
-            expiry_input = ui.select(
-                {
-                    '1': '1 hour',
-                    '24': '24 hours',
-                    '168': '7 days',
-                    'none': 'No expiration',
-                },
-                value='24',
-                label='Hold expiration',
-            ).props('outlined dense').classes('w-full')
-        reason_input = ui.input('Reason / audit note').props(
-            'outlined dense maxlength=200'
-        ).classes('w-full')
+        account_input = (
+            ui
+            .select(
+                options,
+                label='Ledger account',
+                with_input=True,
+                clearable=True,
+            )
+            .props('outlined dense options-dense dark')
+            .classes('w-full')
+        )
+        with ui.grid().classes(
+            'w-full grid-cols-1 gap-4 md:grid-cols-3 lg:grid-cols-1'
+        ):
+            operation_input = (
+                ui
+                .select(
+                    {
+                        'credit': 'Add balance',
+                        'debit': 'Remove balance',
+                        'hold': 'Reserve / block balance',
+                    },
+                    value='credit',
+                    label='Operation',
+                )
+                .props('outlined dense dark')
+                .classes('w-full')
+            )
+            amount_input = (
+                ui
+                .number(
+                    'Amount (sats)',
+                    min=1,
+                    step=1,
+                    precision=0,
+                )
+                .props('outlined dense dark')
+                .classes('w-full')
+            )
+            expiry_input = (
+                ui
+                .select(
+                    {
+                        '1': '1 hour',
+                        '24': '24 hours',
+                        '168': '7 days',
+                        'none': 'No expiration',
+                    },
+                    value='24',
+                    label='Hold expiration',
+                )
+                .props('outlined dense dark')
+                .classes('w-full')
+            )
+        reason_input = (
+            ui
+            .input('Reason / audit note')
+            .props('outlined dense dark maxlength=200')
+            .classes('w-full')
+        )
 
         with ui.dialog() as confirmation:
             with ui.card().classes(f'w-full max-w-lg {CARD_CLASS} gap-4'):
                 ui.label('Confirm balance operation').classes(
                     f'text-lg {PANEL_TITLE_CLASS}'
                 )
-                ui.label(
-                    'This action changes financial state and will be recorded '
-                    'in the Ledger audit trail.'
-                ).classes(f'text-sm {MUTED_TEXT_CLASS}')
+                with ui.column().classes(f'w-full {SUBTLE_CARD_CLASS}'):
+                    ui.label(
+                        'This action changes financial state and will be '
+                        'recorded in the Ledger audit trail.'
+                    ).classes(f'text-sm {MUTED_TEXT_CLASS}')
                 with ui.row().classes('w-full justify-end gap-2'):
                     ui.button('Cancel', on_click=confirmation.close).props(
                         'flat no-caps'
-                    )
+                    ).classes('text-zinc-300')
                     ui.button(
                         'Confirm operation',
                         icon='verified_user',
@@ -275,7 +330,7 @@ def _operation_panel(
             icon='fact_check',
             on_click=confirmation.open,
         ).props('unelevated no-caps color=primary').classes(
-            'w-full sm:w-auto'
+            'w-full sm:w-auto font-medium'
         )
 
 
