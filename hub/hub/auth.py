@@ -1,6 +1,7 @@
 import logging
 import time
 from collections.abc import MutableMapping
+from contextlib import suppress
 from typing import Any
 from uuid import UUID
 
@@ -138,8 +139,9 @@ async def store_user_with_internal_roles(
 
 def clear_user(request: Request | None = None) -> None:
     storage = _auth_storage(request)
-    storage.pop(SESSION_USER_KEY, None)
-    storage.pop(SESSION_ROLES_KEY, None)
+    with suppress(TypeError):
+        storage.pop(SESSION_USER_KEY, None)
+        storage.pop(SESSION_ROLES_KEY, None)
 
 
 async def login(request: Request) -> RedirectResponse:
@@ -182,6 +184,12 @@ async def callback(request: Request) -> RedirectResponse:
 def logout(request: Request) -> RedirectResponse:
     clear_user(request)
     return RedirectResponse('/')
+
+
+def keycloak_account_url(settings: Settings | None = None) -> str:
+    settings = settings or get_settings()
+    issuer = settings.OIDC_ISSUER.rstrip('/')
+    return f'{issuer}/account'
 
 
 def is_valid_user_info(

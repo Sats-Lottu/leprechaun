@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from authlib.integrations.starlette_client import OAuthError
+from nicegui.persistence.read_only_dict import ReadOnlyDict
 from starlette.responses import RedirectResponse
 
 from hub import auth
@@ -213,6 +214,41 @@ def test_current_user_removes_invalid_session(monkeypatch) -> None:
 
     assert auth.current_user() is None
     assert auth.SESSION_USER_KEY not in user_storage
+
+
+def test_current_user_handles_read_only_browser_storage(monkeypatch) -> None:
+    browser_storage = ReadOnlyDict(
+        {
+            auth.SESSION_USER_KEY: {
+                'sub': 'user-123',
+                'exp': 99,
+                'aud': 'hub',
+                'iss': 'http://oidc.local',
+            },
+            auth.SESSION_ROLES_KEY: ['admin'],
+        },
+        write_error_message=(
+            'the response to the browser has already been built, so '
+            'modifications cannot be sent back anymore'
+        ),
+    )
+    monkeypatch.setattr(
+        auth,
+        'app',
+        SimpleNamespace(storage=SimpleNamespace(browser=browser_storage)),
+    )
+    monkeypatch.setattr(
+        auth,
+        'get_settings',
+        lambda: Settings(
+            OIDC_CLIENT_ID='hub',
+            OIDC_ISSUER='http://oidc.local',
+        ),
+    )
+
+    assert auth.current_user() is None
+    assert auth.current_user_sub() is None
+    assert auth.SESSION_USER_KEY in browser_storage
 
 
 def test_current_user_sub_returns_sub(monkeypatch) -> None:
